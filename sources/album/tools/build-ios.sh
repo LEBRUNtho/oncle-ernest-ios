@@ -16,7 +16,7 @@ WORK=${WORK:-$HOME/album-ernest-build}
 MODE=${1:-app}
 BUNDLE_ID="${BUNDLE_PREFIX}.albumernest"
 APPNAME="AlbumErnest"
-DISPLAY="L’Album Secret"
+DISPLAY="L'Album"
 
 SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 T=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
