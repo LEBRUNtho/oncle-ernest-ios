@@ -1,0 +1,105 @@
+diff --git a/backends/platform/sdl/sdl-window.cpp b/backends/platform/sdl/sdl-window.cpp
+index 931fa8686b..15eaabed03 100644
+--- a/backends/platform/sdl/sdl-window.cpp
++++ b/backends/platform/sdl/sdl-window.cpp
+@@ -424,6 +424,9 @@ int SdlWindow::getDisplayIndex() const {
+ }
+ 
+ bool SdlWindow::createOrUpdateWindow(int width, int height, uint32 flags) {
++	// Sonde Album : fenêtre cachée pour les tests automatiques (SONDE_HIDDEN=1), afin de laisser le Mac utilisable
++	if (getenv("SONDE_HIDDEN"))
++		flags |= SDL_WINDOW_HIDDEN;
+ #if SDL_VERSION_ATLEAST(3, 0, 0)
+ 	if (_inputGrabState) {
+ 		flags |= SDL_WINDOW_MOUSE_GRABBED;
+diff --git a/engines/director/director.cpp b/engines/director/director.cpp
+index 7857289f15..ae6a9a0629 100644
+--- a/engines/director/director.cpp
++++ b/engines/director/director.cpp
+@@ -19,10 +19,15 @@
+  *
+  */
+ 
++#define FORBIDDEN_SYMBOL_EXCEPTION_getenv
+ #include "backends/modular-backend.h"
+ #include "backends/graphics/graphics.h"
+ 
+ #include "common/config-manager.h"
++#include "common/file.h"
++#include "common/fs.h"
++#include "graphics/palette.h"
++#include "image/png.h"
+ #include "common/debug-channels.h"
+ #include "common/tokenizer.h"
+ 
+@@ -263,6 +268,50 @@ void renderPendingWindow() { }
+ }
+ #endif
+ 
++// Sonde Ernest 4 (étude de faisabilité, jeu « Le Temple perdu ») : SONDE_SHOT_DIR = dossier où déposer une capture
++// toutes les 2 s (shot_NNNN.png) ; /tmp/ernest4_cmd = lignes « click X Y » ou « key CODE » jouées dans l'ordre.
++void DirectorEngine::sondeTick() {
++	static const char *dir = getenv("SONDE_SHOT_DIR");
++	static uint32 lastShot = 0, shotNo = 0;
++	static int32 cmdPos = 0;
++	uint32 now = g_system->getMillis();
++	if (dir && now - lastShot >= 2000) {
++		lastShot = now;
++		Graphics::Surface *scr = g_system->lockScreen();
++		if (scr) {
++			Common::DumpFile f;
++			if (f.open(Common::Path(Common::String::format("%s/shot_%04u.png", dir, shotNo++)))) {
++				byte pal[768];
++				g_system->getPaletteManager()->grabPalette(pal, 0, 256);
++				Image::writePNG(f, *scr, scr->format.bytesPerPixel == 1 ? pal : nullptr);
++			}
++			g_system->unlockScreen();
++		}
++	}
++	Common::File c;
++	if (c.open(Common::FSNode(Common::Path("/tmp/ernest4_cmd")))) {
++		c.seek(cmdPos);
++		while (!c.eos()) {
++			Common::String l = c.readLine();
++			if (c.eos() && l.empty())
++				break;
++			int x, y;
++			if (sscanf(l.c_str(), "click %d %d", &x, &y) == 2) {
++				Common::Event e;
++				e.mouse = Common::Point(x, y);
++				e.type = Common::EVENT_MOUSEMOVE;
++				g_system->getEventManager()->pushEvent(e);
++				e.type = Common::EVENT_LBUTTONDOWN;
++				g_system->getEventManager()->pushEvent(e);
++				e.type = Common::EVENT_LBUTTONUP;
++				g_system->getEventManager()->pushEvent(e);
++				debug("sonde : click %d %d", x, y);
++			}
++		}
++		cmdPos = c.pos();
++	}
++}
++
+ Common::Error DirectorEngine::run() {
+ 	debug("Starting v%d Director game", getVersion());
+ 
+@@ -391,6 +440,7 @@ Common::Error DirectorEngine::run() {
+ 		DT::renderPendingWindow();
+ 
+ 		draw();
++		sondeTick();	// Sonde Ernest 4 (étude de faisabilité) : captures + clics télécommandés
+ 		while (!_windowsToForget.empty()) {
+ 			Window *window = _windowsToForget.back();
+ 			_windowsToForget.pop_back();
+diff --git a/engines/director/director.h b/engines/director/director.h
+index 82b393d4d0..48c491297b 100644
+--- a/engines/director/director.h
++++ b/engines/director/director.h
+@@ -291,6 +291,7 @@ public:
+ 
+ protected:
+ 	Common::Error run() override;
++	void sondeTick();	// Sonde Ernest 4
+ 
+ public:
+ 	const DirectorGameDescription *_gameDescription;

@@ -1,0 +1,3 @@
+pycdlib
+py7zr
+imageio-ffmpeg

@@ -1,0 +1,17 @@
+L'ONCLE ERNEST SUR iOS : PRÉPARATEUR (version bêta)
+
+Transforme le CD d'un des cinq jeux de l'oncle Ernest en application iPhone.
+
+1. Installer Python 3 si besoin : https://www.python.org/downloads/
+   (sous Windows, cocher « Add Python to PATH » pendant l'installation).
+2. Double-cliquer sur le lanceur de votre système :
+     - macOS   : « Preparer (macOS).command » (la 1re fois : clic droit > Ouvrir)
+     - Windows : « Preparer (Windows).bat »
+     - Linux   : ./preparer-linux.sh dans un terminal
+3. Glisser dans la fenêtre l'image de votre CD (.iso, ou archive .7z / .zip qui la contient, ou le dossier du CD),
+   puis appuyer sur Entrée. Le jeu est reconnu tout seul.
+4. L'application apparaît dans le dossier « apps » (fichier .ipa, quelques minutes pour les jeux 4 et 5).
+5. L'installer sur iPhone ou iPad avec votre outil de sideloading habituel (Feather, AltStore, Sideloadly...) :
+   l'application n'est pas signée, c'est cet outil qui la signe pour votre appareil.
+
+Le dossier « coquilles » contient les cinq applications SANS les jeux : ne pas le déplacer.
