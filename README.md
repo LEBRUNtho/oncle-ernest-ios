@@ -53,13 +53,6 @@ Le dossier `sources/` contient de quoi reconstruire les applications sur un Mac 
 Petit projet perso : j'ai grandi avec ces jeux, ils ne tournaient plus nulle part, alors je m'amuse avec une IA
 (Claude) à les faire revivre sur iPhone et iPad. Rien de professionnel, aucune prétention.
 
-## Contributeurs
-
-- **Macrey** : l'idée, les CD, les tests sur iPhone, les choix et les icônes redessinées.
-- **Claude** (IA d'Anthropic) : l'essentiel du travail technique, c'est-à-dire l'analyse des jeux, les corrections
-  des moteurs de ScummVM, l'adaptation au tactile, les parties jouées de bout en bout pour tout vérifier et le
-  préparateur.
-
 ## Droits
 
 Les jeux, leurs personnages, images, musiques, voix et textes appartiennent à leurs ayants droit : Lexis Numérique,
