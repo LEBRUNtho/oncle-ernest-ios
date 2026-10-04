@@ -15,6 +15,7 @@ iPhone et iPad, en plein écran et au doigt.** Version bêta.
 
 - Les jeux d'origine, complets, qui tournent nativement sur iPhone et iPad récents (pas d'émulation Windows).
 - Des contrôles pensés pour le doigt : toucher pour cliquer, glisser pour déplacer les objets.
+- Sur iPhone, le livre agrandi au maximum, les outils en gros boutons sur le côté gauche et les pages à droite.
 - Un menu des marque-pages pour voyager d'une page à l'autre comme dans l'album.
 - Des icônes redessinées en haute définition.
 - Des sauvegardes visibles dans l'app Fichiers, à copier d'un appareil à l'autre.
@@ -36,8 +37,8 @@ ou le dossier du CD.
 
 ## Bêta : ce qu'il faut savoir
 
-- Les jeux 1 à 3 ont été testés sur un iPhone ; les jeux 4 et 5 pour l'instant sur Mac et au simulateur seulement.
-  D'autres appareils peuvent réserver des surprises.
+- Les jeux 1 à 3 ont été testés sur un iPhone ; les jeux 4 et 5 surtout sur Mac et au simulateur, avec un premier
+  essai sur iPhone. D'autres appareils peuvent réserver des surprises.
 - Le préparateur a été vérifié sur macOS ; les lanceurs Windows et Linux sont neufs et restent à éprouver.
 - Le son et quelques mini-jeux d'adresse des jeux 4 et 5 méritent encore des retours.
 

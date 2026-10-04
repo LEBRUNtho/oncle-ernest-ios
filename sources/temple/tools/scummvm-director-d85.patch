@@ -63,7 +63,7 @@ index 2c7f6caf1e..b3c9fa7f2c 100644
  
  #endif
 diff --git a/backends/graphics/opengl/opengl-graphics.cpp b/backends/graphics/opengl/opengl-graphics.cpp
-index 459563a8e2..732ff8c95a 100644
+index 459563a8e2..77c4fe6fad 100644
 --- a/backends/graphics/opengl/opengl-graphics.cpp
 +++ b/backends/graphics/opengl/opengl-graphics.cpp
 @@ -21,6 +21,7 @@
@@ -84,10 +84,10 @@ index 459563a8e2..732ff8c95a 100644
 +		const Common::String crop = ConfMan.hasKey("album_crop", Common::ConfigManager::kTransientDomain) ? ConfMan.get("album_crop", Common::ConfigManager::kTransientDomain) : Common::String();
 +		if (crop != sondeLastCrop) {
 +			sondeLastCrop = crop;
-+			int top = 0, bottom = 0, leftBand = 0;
++			int top = 0, bottom = 0, leftBand = 0, cropLeft = 0, cropRight = 0, rightBand = 0;
 +			if (!crop.empty())
-+				sscanf(crop.c_str(), "%d %d %d", &top, &bottom, &leftBand);
-+			sondeSetCrop(top, bottom, leftBand);
++				sscanf(crop.c_str(), "%d %d %d %d %d %d", &top, &bottom, &leftBand, &cropLeft, &cropRight, &rightBand);
++			sondeSetCrop(top, bottom, leftBand, cropLeft, cropRight, rightBand);
 +		}
 +	}
 +
@@ -95,10 +95,10 @@ index 459563a8e2..732ff8c95a 100644
  #if defined(USE_OPENGL_GAME) || defined(USE_OPENGL_SHADERS)
  		&& !_renderer3d
 diff --git a/backends/graphics/windowed.h b/backends/graphics/windowed.h
-index 7a7cddd37f..0338dece6f 100644
+index 7a7cddd37f..be33f3a2ef 100644
 --- a/backends/graphics/windowed.h
 +++ b/backends/graphics/windowed.h
-@@ -381,6 +381,20 @@ protected:
+@@ -381,6 +381,28 @@ protected:
  				getWidth() * getGameRenderScale(), getHeight() * getGameRenderScale(),
  				safeArea, _gameDrawRect);
  
@@ -106,11 +106,19 @@ index 7a7cddd37f..0338dece6f 100644
 +		// l'image entière est agrandie et décalée, le surplus sort de l'écran. Les touchers restent convertis par ce rectangle.
 +		if (_sondeCropBottom > _sondeCropTop && getWidth() > 0 && getHeight() > 0) {
 +			const float band = (float)(_sondeCropBottom - _sondeCropTop);
-+			const float scale = MIN((float)safeArea.width() / getWidth(), (float)safeArea.height() / band);
++			// recadrage en largeur aussi (jeux 4-5) : seules les colonnes [gauche, droite[ doivent tenir entre la bande des
++			// outils et celle du menu ; les marges du jeu passent sous ces bandes (noires) ou sortent de l'écran
++			const bool cols = _sondeCropRight > _sondeCropLeft;
++			const int colL = cols ? _sondeCropLeft : 0, colW = cols ? _sondeCropRight - _sondeCropLeft : getWidth();
++			const int leftPx = (int)(_sondeLeftBand * sondePointScale() + 0.5f);
++			const int rightPx = (int)(_sondeRightBand * sondePointScale() + 0.5f);
++			const int availW = cols ? MAX(1, safeArea.width() - leftPx - rightPx) : safeArea.width();
++			const float scale = MIN((float)availW / colW, (float)safeArea.height() / band);
 +			const int w = (int)(getWidth() * scale + 0.5f);
 +			const int freeW = safeArea.width() - w;
-+			const int leftPx = (int)(_sondeLeftBand * sondePointScale() + 0.5f);
-+			const int left = safeArea.left + ((_sondeLeftBand > 0 && leftPx < freeW) ? leftPx : freeW / 2);
++			int left = safeArea.left + ((_sondeLeftBand > 0 && leftPx < freeW) ? leftPx : freeW / 2);
++			if (cols)
++				left = safeArea.left + leftPx + (int)((availW - colW * scale) / 2) - (int)(colL * scale + 0.5f);
 +			const int bandTop = safeArea.top + (int)((safeArea.height() - band * scale) / 2);
 +			const int top = bandTop - (int)(_sondeCropTop * scale + 0.5f);
 +			_gameDrawRect = Common::Rect(left, top, left + w, top + (int)(getHeight() * scale + 0.5f));
@@ -119,7 +127,7 @@ index 7a7cddd37f..0338dece6f 100644
  		if (getOverlayHeight()) {
  			const int16 overlayWidth = getOverlayWidth(),
  			            overlayHeight = getOverlayHeight();
-@@ -518,6 +532,23 @@ protected:
+@@ -518,6 +540,28 @@ protected:
  	 */
  	Common::Rect _gameDrawRect;
  
@@ -127,18 +135,23 @@ index 7a7cddd37f..0338dece6f 100644
 +	// Sonde Album : recadrage vertical du jeu (lignes [haut, bas[), 0 0 = aucun
 +	// Sonde Album : bande de gauche en points (0 = image centrée) ; échelle points → pixels fournie par le backend
 +	virtual float sondePointScale() const { return 1.0f; }
-+	void sondeSetCrop(int top, int bottom, int leftBand = 0) {
-+		if (top == _sondeCropTop && bottom == _sondeCropBottom && leftBand == _sondeLeftBand)
++	// Sonde Album : colonnes [gauche, droite[ à montrer en entier entre une bande de gauche et une de droite (points), 0 0 = toute la largeur
++	void sondeSetCrop(int top, int bottom, int leftBand = 0, int cropLeft = 0, int cropRight = 0, int rightBand = 0) {
++		if (top == _sondeCropTop && bottom == _sondeCropBottom && leftBand == _sondeLeftBand &&
++				cropLeft == _sondeCropLeft && cropRight == _sondeCropRight && rightBand == _sondeRightBand)
 +			return;
 +		_sondeCropTop = top;
 +		_sondeCropBottom = bottom;
 +		_sondeLeftBand = leftBand;
++		_sondeCropLeft = cropLeft;
++		_sondeCropRight = cropRight;
++		_sondeRightBand = rightBand;
 +		recalculateDisplayAreas();
 +	}
 +	const Common::Rect &sondeGameDrawRect() const { return _gameDrawRect; }
 +
 +protected:
-+	int _sondeCropTop = 0, _sondeCropBottom = 0, _sondeLeftBand = 0;
++	int _sondeCropTop = 0, _sondeCropBottom = 0, _sondeLeftBand = 0, _sondeCropLeft = 0, _sondeCropRight = 0, _sondeRightBand = 0;
 +
  	/**
  	 * The scaled draw rectangle for the overlay (launcher) surface within the
@@ -675,7 +688,7 @@ index 011c75ae0e..bdf505701b 100644
  #endif
  
 diff --git a/backends/platform/ios7/ios7_video.mm b/backends/platform/ios7/ios7_video.mm
-index a64f0efe65..7104ddc4fc 100644
+index a64f0efe65..874a03d0f5 100644
 --- a/backends/platform/ios7/ios7_video.mm
 +++ b/backends/platform/ios7/ios7_video.mm
 @@ -102,6 +102,22 @@ @implementation iPhoneView {
@@ -710,7 +723,7 @@ index a64f0efe65..7104ddc4fc 100644
  	[oneFingerLongPressGesture setAllowedTouchTypes:@[@(UITouchTypeDirect),@(UITouchTypePencil)]];
  	[oneFingerLongPressGesture setDelaysTouchesBegan:NO];
  	[oneFingerLongPressGesture setDelaysTouchesEnded:NO];
-@@ -553,6 +571,450 @@ -(void)safeAreaInsetsDidChange {
+@@ -553,6 +571,487 @@ -(void)safeAreaInsetsDidChange {
  	[super safeAreaInsetsDidChange];
  
  	[self adjustViewFrameForSafeArea];
@@ -722,7 +735,8 @@ index a64f0efe65..7104ddc4fc 100644
 +// Sonde Album : même ordre que kSondeToolNames (engines/mtropolis/mtropolis.cpp) : le rang est envoyé au moteur
 +static NSArray<NSString *> *albumToolNames() {
 +	return @[@"magneto", @"marteau_pic", @"torche", @"arrosoir_mt", @"appphotos_mt", @"imprimante", @"help", @"sortie-00.pct",
-+		@"oil_bas", @"torche_bas", @"acide_bas", @"appphotos_bas", @"sortie", @"explosif_bas"];	// jeu 2, jeu 3
++		@"oil_bas", @"torche_bas", @"acide_bas", @"appphotos_bas", @"sortie", @"explosif_bas",	// jeu 2, jeu 3
++		@"d_magneto", @"d_fire", @"d_camera", @"d_flute", @"d_printer", @"d_telecom", @"d_tambour", @"d_quit"];	// jeux 4-5 (director.cpp)
 +}
 +
 +// Icône : album_icons/<nom>.png dans l'app (images HD du mainteneur, ou extraites du jeu), sinon un symbole système
@@ -743,7 +757,10 @@ index a64f0efe65..7104ddc4fc 100644
 +	NSDictionary<NSString *, NSString *> *symbols = @{@"magneto": @"recordingtape", @"marteau_pic": @"hammer", @"torche": @"flame",
 +		@"arrosoir_mt": @"drop", @"appphotos_mt": @"camera", @"imprimante": @"printer", @"help": @"questionmark.circle",
 +		@"sortie-00.pct": @"door.left.hand.open", @"oil_bas": @"drop.fill", @"torche_bas": @"flame", @"acide_bas": @"flask",
-+		@"appphotos_bas": @"camera", @"sortie": @"door.left.hand.open", @"explosif_bas": @"flame"};	// jeu 3
++		@"appphotos_bas": @"camera", @"sortie": @"door.left.hand.open", @"explosif_bas": @"flame",	// jeu 3
++		@"d_magneto": @"recordingtape", @"d_fire": @"flame", @"d_camera": @"camera", @"d_flute": @"music.note",
++		@"d_printer": @"printer", @"d_telecom": @"antenna.radiowaves.left.and.right", @"d_tambour": @"music.note",
++		@"d_quit": @"door.left.hand.open"};	// jeux 4-5
 +	UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:34 weight:UIImageSymbolWeightRegular];
 +	UIImage *sym = [UIImage systemImageNamed:symbols[name] ?: @"circle" withConfiguration:cfg];
 +	return [sym imageWithTintColor:[UIColor colorWithWhite:0.85 alpha:1.0] renderingMode:UIImageRenderingModeAlwaysOriginal];
@@ -834,6 +851,17 @@ index a64f0efe65..7104ddc4fc 100644
 +		return img;
 +	NSString *path = [[NSBundle mainBundle] pathForResource:name ofType:@"png" inDirectory:@"album_icons/tabs"];
 +	img = path ? [UIImage imageWithContentsOfFile:path] : nil;
++	if (!img && name.length > 7 && [name hasPrefix:@"tab_s"]) {
++		// page secondaire (« tab_s03b_… ») : l'onglet de la page principale du même chapitre (« tab_s03a_… »)
++		NSString *prefix = [name substringToIndex:7];
++		for (NSString *f in [[NSBundle mainBundle] pathsForResourcesOfType:@"png" inDirectory:@"album_icons/tabs"]) {
++			if ([[f lastPathComponent] hasPrefix:prefix]) {
++				img = [UIImage imageWithContentsOfFile:f];
++				if (img)
++					break;
++			}
++		}
++	}
 +	if (!img) {
 +		// pas d'image : un rectangle arrondi neutre
 +		UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(22, 22)];
@@ -1004,8 +1032,17 @@ index a64f0efe65..7104ddc4fc 100644
 +	const CGRect g = CGRectMake(_albumGameRect.origin.x / s, _albumGameRect.origin.y / s, _albumGameRect.size.width / s, _albumGameRect.size.height / s);
 +	const UIEdgeInsets safe = self.safeAreaInsets;
 +	const CGRect bounds = self.bounds;
-+	const CGRect leftBand = CGRectMake(safe.left, safe.top, MAX(0, CGRectGetMinX(g) - safe.left), bounds.size.height - safe.top - safe.bottom);
-+	const CGFloat rightX = CGRectGetMaxX(g);
++	// jeux 4-5 : « @G » et « @dD » dans la liste des outils = colonnes du jeu (sur 640) où commence et finit ce qui doit
++	// rester visible (le livre) ; les marges noires du jeu au-delà appartiennent aux bandes des boutons et du menu
++	CGFloat bookLeft = 0, bookRight = g.size.width;
++	for (NSString *v in _albumVisibleTools) {
++		if ([v hasPrefix:@"@d"])
++			bookRight = [[v substringFromIndex:2] doubleValue] * g.size.width / 640.0;
++		else if ([v hasPrefix:@"@"])
++			bookLeft = [[v substringFromIndex:1] doubleValue] * g.size.width / 640.0;
++	}
++	const CGRect leftBand = CGRectMake(safe.left, safe.top, MAX(0, CGRectGetMinX(g) + bookLeft - safe.left), bounds.size.height - safe.top - safe.bottom);
++	const CGFloat rightX = MIN(CGRectGetMaxX(g), CGRectGetMinX(g) + bookRight);
 +	const CGRect rightBand = CGRectMake(rightX, safe.top, MAX(0, bounds.size.width - safe.right - rightX), bounds.size.height - safe.top - safe.bottom);
 +
 +	// Noms des marque-pages : le moteur a besoin de savoir combien de lignes du jeu afficher pour laisser une bande de
@@ -1030,7 +1067,7 @@ index a64f0efe65..7104ddc4fc 100644
 +		const BOOL visible = [_albumVisibleTools containsObject:name];
 +		b.hidden = !visible;
 +		if (visible)
-+			[(([name isEqualToString:@"sortie-00.pct"] || [name isEqualToString:@"sortie"]) ? right : left) addObject:b];
++			[(([name isEqualToString:@"sortie-00.pct"] || [name isEqualToString:@"sortie"] || [name isEqualToString:@"d_quit"]) ? right : left) addObject:b];
 +	}
 +	void (^stack)(NSArray<UIButton *> *, CGRect) = ^(NSArray<UIButton *> *buttons, CGRect band) {
 +		if (!buttons.count)
@@ -1118,10 +1155,23 @@ index a64f0efe65..7104ddc4fc 100644
 +			CGFloat fontSize = 9.5;
 +			for (; fontSize > 6.5; fontSize -= 0.5) {
 +				UIFont *f = [UIFont systemFontOfSize:fontSize weight:UIFontWeightBold];
-+				CGFloat widest = 0;
-+				for (NSString *word in [title componentsSeparatedByString:@" "])
-+					widest = MAX(widest, [word sizeWithAttributes:@{NSFontAttributeName: f}].width);
-+				if (widest <= availW)
++				// et le titre entier sur 2 lignes au plus (« SALLE DES CARTES » finissait en 3 lignes, coupé)
++				CGFloat widest = 0, line = 0;
++				int lines = 1;
++				const CGFloat space = [@" " sizeWithAttributes:@{NSFontAttributeName: f}].width;
++				for (NSString *word in [title componentsSeparatedByString:@" "]) {
++					if (!word.length)
++						continue;
++					const CGFloat w = [word sizeWithAttributes:@{NSFontAttributeName: f}].width;
++					widest = MAX(widest, w);
++					if (line > 0 && line + space + w > availW) {
++						lines++;
++						line = w;
++					} else {
++						line += (line > 0 ? space : 0) + w;
++					}
++				}
++				if (widest <= availW && lines <= 2)
 +					break;
 +			}
 +			b.titleLabel.font = [UIFont systemFontOfSize:fontSize weight:UIFontWeightBold];
@@ -1161,7 +1211,7 @@ index a64f0efe65..7104ddc4fc 100644
  }
  #endif
  
-@@ -947,3 +1409,47 @@ - (void) endBackgroundSaveStateTask {
+@@ -947,3 +1446,47 @@ - (void) endBackgroundSaveStateTask {
  }
  
  @end
@@ -1522,7 +1572,7 @@ index a60dd43d94..959c1e67e1 100644
  	{ nullptr, nullptr },
  };
 diff --git a/engines/director/channel.cpp b/engines/director/channel.cpp
-index 83b8687934..cef5e952d1 100644
+index 83b8687934..0c99515a5d 100644
 --- a/engines/director/channel.cpp
 +++ b/engines/director/channel.cpp
 @@ -24,6 +24,7 @@
@@ -1560,7 +1610,7 @@ index 83b8687934..cef5e952d1 100644
  	if (_sprite->_spriteType == kBitmapSprite &&
  		_sprite->_cast && _sprite->_cast->_type == kCastBitmap &&
  		((BitmapCastMember *)_sprite->_cast)->_bitsPerPixel == 1) {
-@@ -150,6 +157,9 @@ DirectorPlotData Channel::getPlotData() {
+@@ -150,9 +157,19 @@ DirectorPlotData Channel::getPlotData() {
  		pd.applyColor = false;
  	} else {
  		pd.setApplyColor();
@@ -1570,7 +1620,17 @@ index 83b8687934..cef5e952d1 100644
  	}
  
  	pd.srfMask = nullptr;
-@@ -177,6 +187,84 @@ DirectorPlotData Channel::getPlotData() {
++	// Texte de l'Xtra Text (D8, Oncle Ernest 4-5) : en matte ou fond transparent, seules les lettres sont dessinées
++	if (_sprite->_cast && _sprite->_cast->_type == kCastXtra && _widget &&
++			(_sprite->_ink == kInkTypeMatte || _sprite->_ink == kInkTypeBackgndTrans)) {
++		Graphics::MacText *t = dynamic_cast<Graphics::MacText *>(_widget);
++		if (t)
++			pd.srfMask = t->getGlyphMask();
++	}
+ 	if (_sprite->_cast && _sprite->_cast->_type == kCastText) {
+ 		// kInkTypeCopy -- no mask, default rendering
+ 
+@@ -177,6 +194,84 @@ DirectorPlotData Channel::getPlotData() {
  	return pd;
  }
  
@@ -1655,7 +1715,7 @@ index 83b8687934..cef5e952d1 100644
  Graphics::ManagedSurface *Channel::getSurface() {
  	if (_widget) {
  		return _widget->getSurface();
-@@ -206,7 +294,7 @@ const Graphics::Surface *Channel::getMask(bool forceMatte) {
+@@ -206,7 +301,7 @@ const Graphics::Surface *Channel::getMask(bool forceMatte) {
  	if (!_sprite->isQDShape() && _sprite->_ink == kInkTypeCopy && _sprite->_thickness & kTHasBlend)
  		needsMatte = true;
  
@@ -1664,7 +1724,7 @@ index 83b8687934..cef5e952d1 100644
  
  	if (needsMatte || forceMatte) {
  		// Mattes are only supported in bitmaps for now. Shapes don't need mattes,
-@@ -236,15 +324,87 @@ const Graphics::Surface *Channel::getMask(bool forceMatte) {
+@@ -236,15 +331,87 @@ const Graphics::Surface *Channel::getMask(bool forceMatte) {
  				return nullptr;
  			}
  			BitmapCastMember *bitmap = (BitmapCastMember *)member;
@@ -1754,7 +1814,7 @@ index 83b8687934..cef5e952d1 100644
  			if (bitmap->_picture) {
  				// reposition channel bounding box, so origin is at registration offset
  				Common::Point originPos = getPosition();
-@@ -264,7 +424,13 @@ const Graphics::Surface *Channel::getMask(bool forceMatte) {
+@@ -264,7 +431,13 @@ const Graphics::Surface *Channel::getMask(bool forceMatte) {
  				Common::Rect srcRect = destRect;
  				srcRect.translate(-destOrigin.x, -destOrigin.y);
  				debugC(8, kDebugImages, "Channel::getMask(): cast mask %s, orig %dx%d, dest %dx%d, crop %d,%d %dx%d",  maskID.asString().c_str(), bitmap->_picture->_surface.w, bitmap->_picture->_surface.h, bbox.width(), bbox.height(), destRect.left, destRect.top, destRect.width(), destRect.height());
@@ -1769,7 +1829,7 @@ index 83b8687934..cef5e952d1 100644
  				return &_mask->rawSurface();
  			} else {
  				warning("Channel::getMask(): Requested cast mask %s, but no picture found", maskID.asString().c_str());
-@@ -342,12 +508,99 @@ bool Channel::isActiveText() {
+@@ -342,12 +515,99 @@ bool Channel::isActiveText() {
  	return false;
  }
  
@@ -1869,7 +1929,7 @@ index 83b8687934..cef5e952d1 100644
  	if (_sprite->_cast) {
  		return _sprite->_cast->isWithin(bbox, pos, _sprite->_ink);
  	} else if (!bbox.contains(pos)) {
-@@ -364,26 +617,63 @@ bool Channel::isMatteIntersect(Channel *channel) {
+@@ -364,26 +624,63 @@ bool Channel::isMatteIntersect(Channel *channel) {
  
  	if (intersectRect.isEmpty())
  		return false;
@@ -2042,10 +2102,10 @@ index 265a6930cd..4e7145745c 100644
  	WINDEMO1("barbpauper", "Demo", "PPDemo.exe", "dde8ac96c47b16cb802a38feb1f1df19", 2519617, 900),
  
 diff --git a/engines/director/director.cpp b/engines/director/director.cpp
-index 7857289f15..28fe84d4cc 100644
+index 7857289f15..0f7b7219a9 100644
 --- a/engines/director/director.cpp
 +++ b/engines/director/director.cpp
-@@ -19,15 +19,21 @@
+@@ -19,15 +19,22 @@
   *
   */
  
@@ -2053,6 +2113,7 @@ index 7857289f15..28fe84d4cc 100644
  #include "backends/modular-backend.h"
  #include "backends/graphics/graphics.h"
  
++#include "common/algorithm.h"
  #include "common/config-manager.h"
 +#include "common/file.h"
 +#include "common/fs.h"
@@ -2067,7 +2128,7 @@ index 7857289f15..28fe84d4cc 100644
  
  #include "director/director.h"
  #include "director/debugger.h"
-@@ -36,6 +42,12 @@
+@@ -36,6 +43,12 @@
  #include "director/movie.h"
  #include "director/picture.h"
  #include "director/score.h"
@@ -2080,7 +2141,7 @@ index 7857289f15..28fe84d4cc 100644
  #include "director/sound.h"
  #include "director/window.h"
  #include "director/lingo/lingo-profiler.h"
-@@ -263,6 +275,522 @@ void renderPendingWindow() { }
+@@ -263,7 +276,706 @@ void renderPendingWindow() { }
  }
  #endif
  
@@ -2088,6 +2149,160 @@ index 7857289f15..28fe84d4cc 100644
 +// toutes les 2 s (shot_NNNN.png) ; /tmp/ernest4_cmd = lignes « click X Y » ou « key CODE » jouées dans l'ordre.
 +// Sonde Ernest 4 : the page tabs of the album (BEH_POSTIT / BEH_POSTIT_BIS behaviours) for the iOS bookmark menu.
 +// album_tabs = "name|visible|title|current|bottom;..." (name -> album_icons/tabs/<name>.png)
++
++// Sonde Ernest 4-5 : outils des jeux Director, à la suite de ceux des jeux 1-3 dans la liste partagée avec l'iPhone
++// (albumToolNames dans ios7_video.mm) : le rang est l'index dans cette liste
++static const int kSondeDirToolBase = 14;
++static const char *const kSondeDirTools[] = {"d_magneto", "d_fire", "d_camera", "d_flute", "d_printer", "d_telecom", "d_tambour", "d_quit"};
++static const char *const kSondeDirToolPrefix[] = {"magneto_", "FIRE_SMALL", "CAMERA_SMALL", "FLUTE_SMALL", "PRINTER_SMALL", "TELECOM_SMALL", "TAMBOUR_SMALL", "quit"};
++static const int kSondeDirBookTop = 43, kSondeDirBookBottom = 439, kSondeDirBookLeft = 56, kSondeDirBookRight = 592;	// livre mesuré : lignes 48-434, colonnes 60-590
++
++static bool sondeIsTabName(const Common::String &n) {
++	// onglets du livre : « 07A », « 07A  bis », « 07A omb »
++	if (n.hasPrefix("CB") && (n.size() == 2 || n[2] == ' '))	// jeu 4 : marque-page « CB » (et « CB omb », « CB  bis »)
++		return true;
++	return n.size() >= 3 && Common::isDigit(n[0]) && Common::isDigit(n[1]) && Common::isUpper(n[2]) && (n.size() == 3 || n[3] == ' ');
++}
++
++void DirectorEngine::sondeUpdateLayout() {
++	if (!gameIsAlbert4() && !gameIsAlbert5())
++		return;
++	Movie *movie = getCurrentMovie();
++	Score *score = movie ? movie->getScore() : nullptr;
++	if (!score)
++		return;
++	const bool enabled = (ConfMan.hasKey("album_layout") || ConfMan.hasDefault("album_layout")) && ConfMan.getBool("album_layout");
++	// page du livre = le jeu y affiche ses marque-pages
++	const bool page = enabled && !_sondeTabChannels.empty();
++	_sondeToolChannels.clear();
++	_sondeToolChannels.resize(ARRAYSIZE(kSondeDirTools));
++	Common::String tools;
++	bool magnetoOpen = false;
++	for (uint i = 1; i < score->_channels.size(); i++) {
++		Channel *ch = score->_channels[i];
++		if (!ch || !ch->_sprite)
++			continue;
++		bool hide = false;
++		if (page && ch->_sprite->_castId.member > 0) {
++			CastMemberInfo *ci = movie->getCastMemberInfo(ch->_sprite->_castId);
++			const Common::String n = ci ? ci->name : Common::String();
++			// marque-page : par son nom, ou par son comportement (« CB », sans numéro, en bas du livre)
++			if (sondeIsTabName(n) || Common::find(_sondeTabChannels.begin(), _sondeTabChannels.end(), (int)i) != _sondeTabChannels.end()) {
++				hide = true;
++			} else {
++				for (uint t = 0; t < ARRAYSIZE(kSondeDirTools); t++) {
++					if (!n.hasPrefix(kSondeDirToolPrefix[t]))
++						continue;
++					// la valise ouverte (grande) reste dans l'image
++					if (t == 0 && ch->getBbox().height() > 80) {
++						magnetoOpen = magnetoOpen || ch->_visible;
++						break;
++					}
++					hide = true;
++					if (ch->_visible && !_sondeToolChannels[t]) {
++						_sondeToolChannels[t] = i;
++					}
++					break;
++				}
++			}
++		}
++		if (ch->_hideFromStage != hide) {
++			ch->_hideFromStage = hide;
++			ch->setDirty();
++		}
++	}
++	for (uint t = 0; t < ARRAYSIZE(kSondeDirTools); t++)
++		if (_sondeToolChannels[t])
++			tools += Common::String(tools.empty() ? "" : ",") + kSondeDirTools[t];
++	// cadre = le livre et tout ce qui est posé autour (photos rangées dans les marges, magnétophone ouvert...) : plus petit
++	// rectangle qui les contient, montré en entier ; les marges noires au-delà passent sous les bandes des boutons et du
++	// menu, ou sortent de l'écran. Pas de changement tant que le doigt est posé (zoom stable pendant un glisser).
++	Common::Rect content(kSondeDirBookLeft, kSondeDirBookTop, kSondeDirBookRight, kSondeDirBookBottom);
++	const uint32 now = g_system->getMillis();
++	for (uint i = 1; page && i < score->_channels.size(); i++) {
++		Channel *ch = score->_channels[i];
++		if (!ch || !ch->_sprite || !ch->_visible || ch->_hideFromStage || ch->_sprite->_castId.member <= 0)
++			continue;
++		Common::Rect r = ch->getBbox();
++		if (r.width() <= 0 || r.height() <= 0 || r.width() >= 200 || r.height() >= 200)
++			continue;	// décors plein écran, masques : pas des objets posés
++		if (((ch->_sprite->_thickness & kTHasBlend) || ch->_sprite->_ink == kInkTypeBlend) && ch->_sprite->_blendAmount == 255)
++			continue;	// sprite transparent
++		{
++			CastMemberInfo *ci = movie->getCastMemberInfo(ch->_sprite->_castId);
++			if (ci && ci->name.hasPrefixIgnoreCase("cach"))
++				continue;	// cache invisible du jeu (« cach_magneto » sur la valise)
++		}
++		r.clip(Common::Rect(0, 0, 640, 480));
++		// seulement les objets immobiles depuis 0,5 s (photos rangées) : une bestiole qui vole hors du livre ne fait pas
++		// bouger le zoom
++		if (i >= _sondeBoxes.size()) {
++			_sondeBoxes.resize(i + 1);
++			_sondeBoxSince.resize(i + 1, 0);
++			_sondeBoxMember.resize(i + 1, 0);
++		}
++		const int memberKey = ch->_sprite->_castId.castLib * 65536 + ch->_sprite->_castId.member;	// image animée = mouvement
++		if (_sondeBoxes[i] != r || _sondeBoxMember[i] != memberKey) {
++			_sondeBoxes[i] = r;
++			_sondeBoxMember[i] = memberKey;
++			_sondeBoxSince[i] = now;
++		}
++		if (!r.isEmpty() && now - _sondeBoxSince[i] >= 500)
++			content.extend(r);
++	}
++	if (magnetoOpen)
++		content.bottom = 480;
++	Common::String crop;
++	if (page && _sondeTouchHeld && !_sondeLastCrop.empty()) {
++		crop = _sondeLastCrop;
++	} else if (page) {
++		// iPhone : « @G » et « @dD » dans la liste des outils = colonnes où commence et finit ce qui doit rester visible
++		crop = Common::String::format("%d %d %d %d %d %d", (int)content.top, (int)content.bottom, 48, (int)content.left, (int)content.right,
++			ConfMan.getBool("album_tab_names") ? 110 : 60);
++	}
++	if (page) {
++		int t = 0, bt = 0, lb = 0, cl = 0, cr = 640, rb = 0;
++		sscanf(crop.c_str(), "%d %d %d %d %d %d", &t, &bt, &lb, &cl, &cr, &rb);
++		tools += Common::String::format("%s@%d,@d%d", tools.empty() ? "" : ",", cl, cr);
++	}
++	if (crop != _sondeLastCrop) {
++		_sondeLastCrop = crop;
++		ConfMan.set("album_crop", crop, Common::ConfigManager::kTransientDomain);
++		debug(1, "sonde : recadrage '%s'", crop.c_str());
++	}
++	if (tools != _sondeLastTools) {
++		_sondeLastTools = tools;
++		ConfMan.set("album_tools", tools, Common::ConfigManager::kTransientDomain);
++		debug(1, "sonde : outils '%s'", tools.c_str());
++	}
++}
++
++// bouton iOS d'un outil (rang dans la liste partagée) = clic sur l'outil masqué du jeu : survol puis appui, comme un doigt
++void DirectorEngine::sondeToolCommand(int index) {
++	const int t = index - kSondeDirToolBase;
++	if (t < 0 || t >= (int)_sondeToolChannels.size() || !_sondeToolChannels[t]) {
++		debug("sonde : outil %d absent", index);
++		return;
++	}
++	Score *score = getCurrentMovie() ? getCurrentMovie()->getScore() : nullptr;
++	Channel *ch = score ? score->getChannelById(_sondeToolChannels[t]) : nullptr;
++	if (!ch)
++		return;
++	Common::Rect r = ch->getBbox();
++	Common::Event e;
++	e.mouse = Common::Point((r.left + r.right) / 2, (r.top + r.bottom) / 2);
++	e.customType = 0x414C5359;	// 'ALSY' (synthétique)
++	e.type = Common::EVENT_MOUSEMOVE;
++	// par le gestionnaire d'événements : sa position de souris est celle que lit le jeu (the mouseH, survol)
++	g_system->getEventManager()->pushEvent(e);
++	e.type = Common::EVENT_LBUTTONDOWN;
++	_sondePendingDown = e;
++	_sondePendingDownAt = g_system->getMillis() + 100;
++	_sondeHasPendingDown = true;
++	_sondePendingUpAfter = true;
++	debug("sonde : outil %s (piste %d) en %d,%d", kSondeDirTools[t], _sondeToolChannels[t], e.mouse.x, e.mouse.y);
++}
++
 +void DirectorEngine::sondePublishTabs() {
 +	Movie *movie = getCurrentMovie();
 +	Score *score = movie ? movie->getScore() : nullptr;
@@ -2248,6 +2463,7 @@ index 7857289f15..28fe84d4cc 100644
 +	if (now - lastTabs >= 250) {
 +		lastTabs = now;
 +		sondePublishTabs();
++		sondeUpdateLayout();
 +		sondeKeyboardTick();
 +	}
 +	// Sonde Ernest 4 : sauvegarde automatique (le jeu ne sauvegarde qu'en quittant par son menu ; sur iPhone, iOS peut
@@ -2317,6 +2533,28 @@ index 7857289f15..28fe84d4cc 100644
 +			autoNext = now + (ok ? 180000 : 5000);
 +			if (ok)
 +				debug("sonde : sauvegarde automatique (%s)", mname.c_str());
++		}
++	}
++	// Ernest 4, tutoriel de la carte (bug d'origine) : toucher la flûte pendant que Chipikan finit de parler lance sa
++	// réplique « 05_A_C05a » tout de suite, puis le jeu écrase l'état de la voix avec #wait : à la fin de la réplique,
++	// l'état devient #END_wait, que la page ne connaît pas (Chipikan figé, jeton verrouillé). On rend le bon état.
++	if (gameIsAlbert4()) {
++		static uint32 lastFluteCheck = 0;
++		Movie *fm = getCurrentMovie();
++		if (fm && now - lastFluteCheck > 200 && fm->getMacName().hasPrefixIgnoreCase("s05a_map")) {
++			lastFluteCheck = now;
++			g_debugger->lingoEval("global gSp\n"
++				"if listP(gSp) then\n"
++				" set vS to getaProp(gSp, #sound)\n"
++				" if objectP(vS) then\n"
++				"  if the pStateVoice of vS = #wait and the pState of vS = #SPEAKING then\n"
++				"   if listP(the pLSPCurrVoice of vS) then\n"
++				"    if getaProp(the pLSPCurrVoice of vS, #MB) = \"05_A_C05a\" then set the pStateVoice of vS to #V05_A_C05a\n"
++				"   end if\n"
++				"  end if\n"
++				"  if the pStateVoice of vS = #END_wait then set the pStateVoice of vS to #END_V05_A_C05a\n"
++				" end if\n"
++				"end if");
 +		}
 +	}
 +	// Ernest 4, vallée sacrée : au retour de Punas gagné, le passage vers le sorcier s'ouvre dans l'état #Init du jeu
@@ -2425,6 +2663,11 @@ index 7857289f15..28fe84d4cc 100644
 +					e.type = Common::EVENT_LBUTTONUP;
 +					g_system->getEventManager()->pushEvent(e);
 +				}
++				debug("sonde : %s", l.c_str());
++			} else if (l.hasPrefix("itouch ")) {
++				// Sonde : doigt simulé par le backend iOS du simulateur (« itouch B|M|E|T x y », coordonnées du jeu),
++				// qui passe par le vrai chemin des touchers iOS (gestes, file d'événements de la vue)
++				ConfMan.set("album_fake_touch", l.substr(7), Common::ConfigManager::kTransientDomain);
 +				debug("sonde : %s", l.c_str());
 +			} else if (sscanf(l.c_str(), "tbegin %d %d", &x, &y) == 2 || sscanf(l.c_str(), "tend %d %d", &x, &y) == 2) {
 +				// Sonde : contact du doigt exactement comme la couche iOS (début / fin marqués)
@@ -2601,9 +2844,11 @@ index 7857289f15..28fe84d4cc 100644
 +}
 +
  Common::Error DirectorEngine::run() {
++	ConfMan.registerDefault("album_tab_names", true);	// Sonde Ernest 4-5 : noms des marque-pages dans le menu iOS
  	debug("Starting v%d Director game", getVersion());
  
-@@ -391,6 +919,7 @@ Common::Error DirectorEngine::run() {
+ 	// We want to avoid GUI errors for buildbot, because they hang it
+@@ -391,6 +1103,7 @@ Common::Error DirectorEngine::run() {
  		DT::renderPendingWindow();
  
  		draw();
@@ -2611,7 +2856,7 @@ index 7857289f15..28fe84d4cc 100644
  		while (!_windowsToForget.empty()) {
  			Window *window = _windowsToForget.back();
  			_windowsToForget.pop_back();
-@@ -451,8 +980,15 @@ Common::String DirectorEngine::getEXEName() const {
+@@ -451,8 +1164,15 @@ Common::String DirectorEngine::getEXEName() const {
  void DirectorEngine::parseOptions() {
  	_options.startMovie.startFrame = -1;
  
@@ -2629,7 +2874,7 @@ index 7857289f15..28fe84d4cc 100644
  	Common::StringTokenizer tok(ConfMan.get("start_movie"), ",");
  
 diff --git a/engines/director/director.h b/engines/director/director.h
-index 82b393d4d0..6f998c5637 100644
+index 82b393d4d0..64f2efd572 100644
 --- a/engines/director/director.h
 +++ b/engines/director/director.h
 @@ -157,6 +157,10 @@ const int SCALE_THRESHOLD = 0x100;
@@ -2643,7 +2888,7 @@ index 82b393d4d0..6f998c5637 100644
  	DirectorEngine(OSystem *syst, const DirectorGameDescription *gameDesc);
  	~DirectorEngine() override;
  
-@@ -291,6 +295,25 @@ public:
+@@ -291,6 +295,37 @@ public:
  
  protected:
  	Common::Error run() override;
@@ -2654,22 +2899,34 @@ index 82b393d4d0..6f998c5637 100644
 +	void sondeTapNameArea(int x, int y);
 +	bool _sondeKeyboardOn = false;
 +	void sondePublishTabs();
++	// Sonde Ernest 4-5 : mise en page iPhone comme les jeux 1-3 (image recadrée sur le livre, onglets et barre d'outils
++	// masqués, outils en boutons iOS dans la bande de gauche)
++	void sondeUpdateLayout();
++	void sondeToolCommand(int index);
++	Common::Array<int> _sondeToolChannels;	// rang dans la liste des outils iOS -> piste de l'outil (0 = absent)
++	Common::String _sondeLastCrop, _sondeLastTools;
 +	Common::Array<int> _sondeTabChannels;	// rang dans album_tabs -> piste de l'onglet
 +	uint32 _sondeSwallowUntil = 0;
 +	bool _sondeTouchHeld = false;
++	Common::Array<Common::Rect> _sondeBoxes;	// mise en page iPhone : dernière place de chaque piste
++	Common::Array<uint32> _sondeBoxSince;	// et depuis quand elle n'a pas bougé
++	Common::Array<int> _sondeBoxMember;	// image affichée (une animation compte comme un mouvement)
 +	bool _sondeHasPendingDown = false;	// finger down delayed so the game first sees the hover (D7 mouseWithin)
 +	uint32 _sondePendingDownAt = 0;
 +	bool _sondePendingUpAfter = false;	// tab menu: release right after the delayed press
 +	// appui tenu au moins 80 ms : les jeux qui lisent « the mouseDown » à chaque image voient un tap court
 +	uint32 _sondeDownAt = 0;
 +	bool _sondeHasPendingUp = false;
++	// déplacements du doigt reçus pendant l'attente de l'appui : rejoués juste après lui (l'appui tombe sur l'objet touché)
++	bool _sondeHasDeferredMove = false;
++	Common::Event _sondeDeferredMove;
 +	Common::Event _sondePendingUp;
 +	uint32 _sondePendingUpAt = 0;
 +	Common::Event _sondePendingDown;
  
  public:
  	const DirectorGameDescription *_gameDescription;
-@@ -378,6 +401,7 @@ struct DirectorPlotData {
+@@ -378,6 +413,7 @@ struct DirectorPlotData {
  	uint32 backColor;
  	uint32 foreColor;
  	bool applyColor = false;
@@ -2677,7 +2934,7 @@ index 82b393d4d0..6f998c5637 100644
  
  	// graphics.cpp
  	void setApplyColor();
-@@ -396,7 +420,7 @@ struct DirectorPlotData {
+@@ -396,7 +432,7 @@ struct DirectorPlotData {
  	                                                srf(old.srf), dst(old.dst),
  	                                                destRect(old.destRect), srcPoint(old.srcPoint),
  	                                                colorWhite(old.colorWhite), colorBlack(old.colorBlack),
@@ -2687,10 +2944,18 @@ index 82b393d4d0..6f998c5637 100644
  			ms = new MacShape(*old.ms);
  		} else {
 diff --git a/engines/director/events.cpp b/engines/director/events.cpp
-index f843756913..bbe3bd42a5 100644
+index f843756913..3c67c97894 100644
 --- a/engines/director/events.cpp
 +++ b/engines/director/events.cpp
-@@ -49,7 +49,113 @@ bool DirectorEngine::pollEvent(Common::Event &event) {
+@@ -22,6 +22,7 @@
+ #include "common/events.h"
+ #include "common/keyboard.h"
+ #include "common/system.h"
++#include "common/config-manager.h"
+ #include "common/translation.h"
+ 
+ #include "audio/mixer.h"
+@@ -49,7 +50,136 @@ bool DirectorEngine::pollEvent(Common::Event &event) {
  		event = _injectedEvents.remove_at(0);
  		return true;
  	}
@@ -2699,6 +2964,10 @@ index f843756913..bbe3bd42a5 100644
 +		_sondeHasPendingDown = false;
 +		event = _sondePendingDown;
 +		_sondeDownAt = g_system->getMillis();
++		if (_sondeHasDeferredMove) {
++			_sondeHasDeferredMove = false;
++			_injectedEvents.push_back(_sondeDeferredMove);
++		}
 +		if (_sondePendingUpAfter) {
 +			_sondePendingUpAfter = false;
 +			_sondePendingUp = _sondePendingDown;
@@ -2735,6 +3004,7 @@ index f843756913..bbe3bd42a5 100644
 +	uint32 now = g_system->getMillis();
 +	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == kSondeTouchBegan) {
 +		_sondePendingUpAfter = false;	// un tab en attente est remplacé par le doigt
++		_sondeHasDeferredMove = false;
 +		if (_sondeHasPendingUp) {	// relâché précédent pas encore livré : garder l'ordre
 +			_sondeHasPendingUp = false;
 +			_injectedEvents.push_back(_sondePendingUp);
@@ -2758,6 +3028,10 @@ index f843756913..bbe3bd42a5 100644
 +			_injectedEvents.push_back(_sondePendingDown);
 +			_sondeDownAt = now;
 +			_sondePendingUpAfter = false;
++			if (_sondeHasDeferredMove) {
++				_sondeHasDeferredMove = false;
++				_injectedEvents.push_back(_sondeDeferredMove);
++			}
 +		}
 +		if (_sondeTouchHeld) {
 +			Common::Event up = event;
@@ -2776,6 +3050,20 @@ index f843756913..bbe3bd42a5 100644
 +		event.customType = 0;
 +		return false;
 +	}
++	// doigt qui glisse avant que l'appui retardé soit livré : on garde le dernier déplacement pour après l'appui
++	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == 0 && _sondeHasPendingDown && _sondeTouchHeld) {
++		_sondeDeferredMove = event;
++		_sondeHasDeferredMove = true;
++		return true;
++	}
++	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == 0x414C4B42) {	// 'ALKB' : bouton d'outil iOS
++		sondeToolCommand(event.relMouse.x);
++		return true;
++	}
++	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == 0x414C4C59) {	// 'ALLY' : lignes voulues par l'iPhone
++		ConfMan.setInt("album_tab_lines", event.relMouse.x, Common::ConfigManager::kTransientDomain);
++		return true;
++	}
 +	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == kSondeTabMark) {
 +		int idx = event.relMouse.x;
 +		Score *score = getCurrentMovie() ? getCurrentMovie()->getScore() : nullptr;
@@ -2787,7 +3075,7 @@ index f843756913..bbe3bd42a5 100644
 +				e.mouse = Common::Point((r.left + r.right) / 2, (r.top + r.bottom) / 2);
 +				e.customType = kSondeSynthetic;
 +				e.type = Common::EVENT_MOUSEMOVE;
-+				_injectedEvents.push_back(e);
++				g_system->getEventManager()->pushEvent(e);	// position lue par le jeu (survol)
 +				// press + release a little later: the tab first has to see the hover (game 5 rollclick cursor)
 +				e.type = Common::EVENT_LBUTTONDOWN;
 +				_sondePendingDown = e;
@@ -2805,7 +3093,7 @@ index f843756913..bbe3bd42a5 100644
  }
  
  bool DirectorEngine::processSysEvents(bool captureClick, bool skipWindowManager) {
-@@ -231,14 +337,16 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -231,14 +361,16 @@ bool Movie::processSysEvent(Common::Event &event) {
  				if (g_system->getEventManager()->getButtonState() == 0)
  					return true;
  
@@ -2826,7 +3114,7 @@ index f843756913..bbe3bd42a5 100644
  				}
  			} else {
  				if (_lastEnteredChannelId) {
-@@ -258,11 +366,12 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -258,11 +390,12 @@ bool Movie::processSysEvent(Common::Event &event) {
  		} else {
  			pos = event.mouse;
  
@@ -2840,7 +3128,7 @@ index f843756913..bbe3bd42a5 100644
  
  			// FIXME: Check if these are tracked with the right mouse button
  			_lastEventTime = g_director->getMacTicks();
-@@ -307,6 +416,13 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -307,6 +440,13 @@ bool Movie::processSysEvent(Common::Event &event) {
  
  			debugC(3, kDebugEvents, "Movie::processSysEvent(): Button Up @(%d, %d), movie '%s'", pos.x, pos.y, _macName.c_str());
  
@@ -2854,7 +3142,7 @@ index f843756913..bbe3bd42a5 100644
  			LEvent ev = kEventMouseUp;
  			// In D5 and up, right mouse clicks don't trigger the mouseUp handler.
  			// They are caught by the rightMouseUp handler only.
-@@ -323,6 +439,12 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -323,6 +463,12 @@ bool Movie::processSysEvent(Common::Event &event) {
  				}
  			}
  
