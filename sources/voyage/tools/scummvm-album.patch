@@ -1,5 +1,5 @@
 diff --git a/backends/graphics/ios/ios-graphics.cpp b/backends/graphics/ios/ios-graphics.cpp
-index b31cf3484d..407771abfb 100644
+index b31cf3484d..be84c32e4b 100644
 --- a/backends/graphics/ios/ios-graphics.cpp
 +++ b/backends/graphics/ios/ios-graphics.cpp
 @@ -21,6 +21,7 @@
@@ -10,12 +10,15 @@ index b31cf3484d..407771abfb 100644
  #include "backends/graphics/ios/renderbuffer.h"
  #include "backends/graphics/opengl/pipelines/pipeline.h"
  #include "backends/platform/ios7/ios7_osys_main.h"
-@@ -102,6 +103,28 @@ float iOSGraphicsManager::getHiDPIScreenFactor() const {
+@@ -102,6 +103,31 @@ float iOSGraphicsManager::getHiDPIScreenFactor() const {
  	return dynamic_cast<OSystem_iOS7 *>(g_system)->getSystemHiDPIScreenFactor();
  }
  
 +// Sonde Album : après chaque image, prévenir l'interface iOS si les outils visibles ou la place du jeu ont changé
 +void iOSGraphicsManager::updateScreen() {
++	// Sonde Album : pendant la sauvegarde qui précède le gel, rien n'est dessiné (OpenGL interdit en arrière-plan)
++	if (dynamic_cast<OSystem_iOS7 *>(g_system)->sondeSuspendPending())
++		return;
 +	OpenGL::OpenGLGraphicsManager::updateScreen();
 +	if (ConfMan.hasKey("album_print", Common::ConfigManager::kTransientDomain)) {
 +		const Common::String name = ConfMan.get("album_print", Common::ConfigManager::kTransientDomain);
@@ -493,18 +496,34 @@ index f2b987b1ca..26b1be5aa7 100644
  }
  
 diff --git a/backends/platform/ios7/ios7_osys_events.cpp b/backends/platform/ios7/ios7_osys_events.cpp
-index 6263d2014a..fbe5ff60ac 100644
+index 6263d2014a..d9043cbbc4 100644
 --- a/backends/platform/ios7/ios7_osys_events.cpp
 +++ b/backends/platform/ios7/ios7_osys_events.cpp
-@@ -27,6 +27,7 @@
+@@ -25,8 +25,10 @@
+ #include "gui/message.h"
+ #include "common/translation.h"
  #include "common/config-manager.h"
++#include "engines/engine.h"
  #include "backends/graphics/ios/ios-graphics.h"
  #include "backends/platform/ios7/ios7_osys_main.h"
 +#include <TargetConditionals.h>	// Sonde Album
  
  static const int kQueuedInputEventDelay = 50;
  
-@@ -41,6 +42,31 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+@@ -35,12 +37,44 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+ 
+ 	long curTime = getMillis();
+ 
++	// Sonde Album : app quittée pendant une partie : le jeu a eu sa chance de sauvegarder (ou le délai est écoulé), on gèle
++	if (_sondeSuspendAt && (curTime >= _sondeSuspendAt || (ConfMan.hasKey("album_suspend_saved", Common::ConfigManager::kTransientDomain) && ConfMan.getBool("album_suspend_saved", Common::ConfigManager::kTransientDomain)))) {
++		_sondeSuspendAt = 0;
++		ConfMan.setBool("album_suspend_saved", false, Common::ConfigManager::kTransientDomain);
++		suspendLoop();
++	}
++
+ 	if (_queuedInputEvent.type != Common::EVENT_INVALID && curTime >= _queuedEventTime) {
+ 		event = _queuedInputEvent;
+ 		_queuedInputEvent.type = Common::EVENT_INVALID;
  		return true;
  	}
  
@@ -536,7 +555,32 @@ index 6263d2014a..fbe5ff60ac 100644
  	InternalEvent internalEvent;
  
  	if (iOS7_fetchEvent(&internalEvent)) {
-@@ -150,6 +176,32 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+@@ -80,10 +114,24 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+ 			return false;
+ 
+ 		case kInputApplicationSuspended:
++			// Sonde Album : le jeu sait sauvegarder sa partie : on le prévient ('ALSV') et on ne gèle qu'après sa
++			// sauvegarde (au plus 1,5 s, sans rien dessiner entre-temps), iOS pouvant fermer l'app une fois en arrière-plan
++			if (g_engine && ConfMan.hasKey("album_save_on_suspend", Common::ConfigManager::kTransientDomain) && ConfMan.getBool("album_save_on_suspend", Common::ConfigManager::kTransientDomain)) {
++				if (!_sondeSuspendAt) {
++					_sondeSuspendAt = getMillis() + 1500;
++					ConfMan.setBool("album_suspend_saved", false, Common::ConfigManager::kTransientDomain);
++					event.type = Common::EVENT_MOUSEMOVE;
++					event.mouse = getEventManager()->getMousePos();	// le pointeur ne bouge pas
++					event.customType = 0x414C5356;	// 'ALSV'
++					return true;
++				}
++				return false;
++			}
+ 			handleEvent_applicationSuspended();
+ 			return false;
+ 
+ 		case kInputApplicationResumed:
++			_sondeSuspendAt = 0;	// revenu avant le gel différé : rien à geler
+ 			handleEvent_applicationResumed();
+ 			return false;
+ 
+@@ -150,6 +198,32 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
  			handleEvent_touchModeChanged();
  			break;
  
@@ -569,7 +613,7 @@ index 6263d2014a..fbe5ff60ac 100644
  		default:
  			break;
  		}
-@@ -166,11 +218,28 @@ bool OSystem_iOS7::handleEvent_touchBegan(Common::Event &event, int x, int y) {
+@@ -166,11 +240,28 @@ bool OSystem_iOS7::handleEvent_touchBegan(Common::Event &event, int x, int y) {
  	if (_currentTouchMode == kTouchModeDirect) {
  		Common::Point mouse(x, y);
  		dynamic_cast<iOSGraphicsManager *>(_graphicsManager)->notifyMousePosition(mouse);
@@ -599,10 +643,21 @@ index 6263d2014a..fbe5ff60ac 100644
  	int deltaX = _lastPadX - x;
  	int deltaY = _lastPadY - y;
 diff --git a/backends/platform/ios7/ios7_osys_main.h b/backends/platform/ios7/ios7_osys_main.h
-index da33e2ef0a..14bca37a38 100644
+index da33e2ef0a..4be6c06c66 100644
 --- a/backends/platform/ios7/ios7_osys_main.h
 +++ b/backends/platform/ios7/ios7_osys_main.h
-@@ -190,6 +190,7 @@ protected:
+@@ -64,6 +64,10 @@ protected:
+ 
+ 	long _lastMouseDown;
+ 	long _queuedEventTime;
++	long _sondeSuspendAt = 0;	// Sonde Album : gel différé (le jeu sauvegarde d'abord), 0 = aucun
++public:
++	bool sondeSuspendPending() const { return _sondeSuspendAt != 0; }
++protected:
+ 	Common::Event _queuedInputEvent;
+ 	TouchMode _currentTouchMode;
+ 	int _lastPadX;
+@@ -190,6 +194,7 @@ protected:
  	void handleEvent_applicationClearState();
  
  	bool handleEvent_touchBegan(Common::Event &event, int x, int y);
@@ -636,6 +691,81 @@ index b1d5a0dee2..7dbc4e5cc6 100644
  			execute_on_main_thread(^ {
  				[[iOS7AppDelegate iPhoneView] hideKeyboard];
  			});
+diff --git a/backends/platform/ios7/ios7_scene_delegate.mm b/backends/platform/ios7/ios7_scene_delegate.mm
+index 2f92bd0392..d594efc8c2 100644
+--- a/backends/platform/ios7/ios7_scene_delegate.mm
++++ b/backends/platform/ios7/ios7_scene_delegate.mm
+@@ -19,10 +19,58 @@
+  *
+  */
+ 
++// Sonde Album : avant les en-têtes ScummVM (common/forbidden.h interdit FILE, utilisé par AudioToolbox)
++#import <AVFoundation/AVFoundation.h>
+ #include "backends/platform/ios7/ios7_scene_delegate.h"
+ #include "backends/platform/ios7/ios7_app_delegate.h"
+ #include "backends/platform/ios7/ios7_video.h"
+ 
++// Sonde Album : iOS ferme vite les apps en arrière-plan (perte de la partie en cours). En arrière-plan, l'app joue un
++// silence en boucle (mode audio d'arrière-plan, UIBackgroundModes = audio) : comme un lecteur de musique, elle reste en
++// vie, le jeu en pause en mémoire, et reprend instantanément. Mélangé aux autres sons (la musique de l'utilisateur
++// continue) ; au retour, la catégorie audio d'origine est rendue (bouton silencieux respecté pendant le jeu).
++static AVAudioPlayer *s_albumKeepAlive = nil;
++static NSString *s_albumPrevCategory = nil;
++static AVAudioSessionCategoryOptions s_albumPrevOptions = 0;
++
++static NSData *albumSilenceWav() {
++	const uint32_t rate = 8000, samples = rate;	// 1 s, mono, 16 bits
++	NSMutableData *d = [NSMutableData dataWithLength:44 + samples * 2];
++	uint8_t *p = (uint8_t *)d.mutableBytes;
++	const uint32_t dataLen = samples * 2, riffLen = 36 + dataLen, fmtLen = 16, byteRate = rate * 2;
++	const uint16_t pcm = 1, mono = 1, align = 2, bits = 16;
++	memcpy(p, "RIFF", 4); memcpy(p + 4, &riffLen, 4); memcpy(p + 8, "WAVEfmt ", 8); memcpy(p + 16, &fmtLen, 4);
++	memcpy(p + 20, &pcm, 2); memcpy(p + 22, &mono, 2); memcpy(p + 24, &rate, 4); memcpy(p + 28, &byteRate, 4);
++	memcpy(p + 32, &align, 2); memcpy(p + 34, &bits, 2); memcpy(p + 36, "data", 4); memcpy(p + 40, &dataLen, 4);
++	return d;
++}
++
++static void albumKeepAliveStart() {
++	if (s_albumKeepAlive)
++		return;
++	AVAudioSession *session = [AVAudioSession sharedInstance];
++	[s_albumPrevCategory release];
++	s_albumPrevCategory = [session.category copy];
++	s_albumPrevOptions = session.categoryOptions;
++	[session setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
++	[session setActive:YES error:nil];
++	s_albumKeepAlive = [[AVAudioPlayer alloc] initWithData:albumSilenceWav() error:nil];
++	s_albumKeepAlive.numberOfLoops = -1;
++	[s_albumKeepAlive play];
++	NSLog(@"Sonde Album: arrière-plan, app maintenue en vie (silence)");
++}
++
++static void albumKeepAliveStop() {
++	if (!s_albumKeepAlive)
++		return;
++	[s_albumKeepAlive stop];
++	[s_albumKeepAlive release];
++	s_albumKeepAlive = nil;
++	if (s_albumPrevCategory)
++		[[AVAudioSession sharedInstance] setCategory:s_albumPrevCategory withOptions:s_albumPrevOptions error:nil];
++	NSLog(@"Sonde Album: premier plan, silence arrêté");
++}
++
+ API_AVAILABLE(ios(13.0))
+ @implementation iOS7SceneDelegate
+ 
+@@ -54,9 +102,11 @@ - (void)sceneDidEnterBackground:(UIScene *)scene {
+ 	[[iOS7AppDelegate iPhoneView] beginBackgroundSaveStateTask];
+ 
+ 	[[iOS7AppDelegate iPhoneView] saveApplicationState];
++	albumKeepAliveStart();	// Sonde Album
+ }
+ 
+ - (void)sceneWillEnterForeground:(UIScene *)scene {
++	albumKeepAliveStop();	// Sonde Album
+ }
+ 
+ @end
 diff --git a/backends/platform/ios7/ios7_touch_controller.mm b/backends/platform/ios7/ios7_touch_controller.mm
 index 5d6bd2bdc7..12135921b3 100644
 --- a/backends/platform/ios7/ios7_touch_controller.mm
@@ -2859,7 +2989,7 @@ index 4b40e6f6e2..fcbe1abe51 100644
  
  	class GetChild : public MiniscriptInstruction {
 diff --git a/engines/mtropolis/modifiers.cpp b/engines/mtropolis/modifiers.cpp
-index 70051fcf1c..2300df0feb 100644
+index 70051fcf1c..26f5bed868 100644
 --- a/engines/mtropolis/modifiers.cpp
 +++ b/engines/mtropolis/modifiers.cpp
 @@ -19,6 +19,7 @@
@@ -3056,15 +3186,22 @@ index 70051fcf1c..2300df0feb 100644
  
  	return true;
  }
-@@ -423,6 +548,7 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
+@@ -422,7 +547,14 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
+ 	// There doesn't appear to be any flag for this, it just uses the file path field
  	bool isPrompt = (_filePath == "Ask User");
  
++	// Sonde Album : partie en cours = N du fichier « sauveN » lu ou écrit (sauvegarde automatique iPhone)
++	if (_fileName.size() > 5 && _fileName.hasPrefix("sauve") && Common::isDigit(_fileName[5])) {
++		Runtime::s_sondeAlbumSlot = atoi(_fileName.c_str() + 5);
++		debug(1, "sonde sauvegarde : partie en cours %d (%s de '%s')", Runtime::s_sondeAlbumSlot, _saveWhen.respondsTo(msg->getEvent()) ? "écriture" : "lecture", _fileName.c_str());
++	}
++
  	if (_saveWhen.respondsTo(msg->getEvent())) {
 +		debug(1, "sonde sauvegarde '%s' #%x : écriture de '%s' (%s)", getName().c_str(), getStaticGUID(), static_cast<Modifier *>(obj)->getName().c_str(), _filePath.c_str());	// Sonde Album
  		CompoundVarSaver saver(runtime, obj);
  
  		const Graphics::ManagedSurface *screenshotOverrideManaged = runtime->getSaveScreenshotOverride().get();
-@@ -451,6 +577,15 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
+@@ -451,6 +583,15 @@ VThreadState SaveAndRestoreModifier::consumeMessage(Runtime *runtime, const Comm
  		else
  			succeeded = runtime->getLoadProvider()->namedLoad(&loader, _fileName);
  
@@ -3080,7 +3217,7 @@ index 70051fcf1c..2300df0feb 100644
  		if (succeeded) {
  			for (const Common::SharedPtr<SaveLoadHooks> &hooks : runtime->getHacks().saveLoadHooks)
  				hooks->onLoad(runtime, this, static_cast<Modifier *>(obj));
-@@ -984,6 +1119,19 @@ VThreadState PathMotionModifier::executeTask(const ExecuteTaskData &taskData) {
+@@ -984,6 +1125,19 @@ VThreadState PathMotionModifier::executeTask(const ExecuteTaskData &taskData) {
  VThreadState PathMotionModifier::changePointsTask(const ChangePointsTaskData &taskData) {
  	Runtime *runtime = taskData.runtime;
  
@@ -3100,7 +3237,7 @@ index 70051fcf1c..2300df0feb 100644
  	_currentPointIndex = taskData.newPoint;
  
  	// TODO: Figure out if this is the correct order.  These are pushed tasks so order is reversed: We set position first,
-@@ -1105,7 +1253,7 @@ VThreadState PathMotionModifier::advanceFrameTask(const AdvanceFrameTaskData &ta
+@@ -1105,7 +1259,7 @@ VThreadState PathMotionModifier::advanceFrameTask(const AdvanceFrameTaskData &ta
  	uint nextPointIndex = 0;
  	if (isPlayingForward) {
  		nextPointIndex = _currentPointIndex + 1;
@@ -3109,7 +3246,7 @@ index 70051fcf1c..2300df0feb 100644
  			nextPointIndex = 0;
  	} else {
  		if (_currentPointIndex == 0)
-@@ -1216,7 +1364,10 @@ bool SimpleMotionModifier::respondsToEvent(const Event &evt) const {
+@@ -1216,7 +1370,10 @@ bool SimpleMotionModifier::respondsToEvent(const Event &evt) const {
  VThreadState SimpleMotionModifier::consumeMessage(Runtime *runtime, const Common::SharedPtr<MessageProperties> &msg) {
  	if (_executeWhen.respondsTo(msg->getEvent())) {
  		if (!_scheduledEvent) {
@@ -3121,7 +3258,7 @@ index 70051fcf1c..2300df0feb 100644
  				startRandomBounce(runtime);
  			else {
  #ifdef MTROPOLIS_DEBUG_ENABLE
-@@ -1320,8 +1471,97 @@ void SimpleMotionModifier::runRandomBounce(Runtime *runtime) {
+@@ -1320,8 +1477,97 @@ void SimpleMotionModifier::runRandomBounce(Runtime *runtime) {
  	_scheduledEvent = runtime->getScheduler().scheduleMethod<SimpleMotionModifier, &SimpleMotionModifier::runRandomBounce>(currentTime + 1, this);
  }
  
@@ -3220,7 +3357,7 @@ index 70051fcf1c..2300df0feb 100644
  }
  
  const char *SimpleMotionModifier::getDefaultName() const {
-@@ -1352,6 +1592,7 @@ bool DragMotionModifier::load(ModifierLoaderContext &context, const Data::DragMo
+@@ -1352,6 +1598,7 @@ bool DragMotionModifier::load(ModifierLoaderContext &context, const Data::DragMo
  		return false;
  	}
  
@@ -3228,7 +3365,7 @@ index 70051fcf1c..2300df0feb 100644
  	if (constrainVertical) {
  		if (constrainHorizontal)
  			return false;	// ???
-@@ -1849,6 +2090,7 @@ bool IfMessengerModifier::load(ModifierLoaderContext &context, const Data::IfMes
+@@ -1849,6 +2096,7 @@ bool IfMessengerModifier::load(ModifierLoaderContext &context, const Data::IfMes
  	if (!MiniscriptParser::parse(data.program, _program, _references))
  		return false;
  
@@ -3236,7 +3373,7 @@ index 70051fcf1c..2300df0feb 100644
  	return true;
  }
  
-@@ -1877,6 +2119,15 @@ CORO_BEGIN_DEFINITION(IfMessengerModifier::RunEvaluateAndSendCoroutine)
+@@ -1877,6 +2125,15 @@ CORO_BEGIN_DEFINITION(IfMessengerModifier::RunEvaluateAndSendCoroutine)
  			CORO_ERROR;
  		CORO_END_IF
  
@@ -3252,7 +3389,7 @@ index 70051fcf1c..2300df0feb 100644
  		CORO_IF(locals->isTrue)
  			CORO_AWAIT(params->self->_sendSpec.sendFromMessenger(params->runtime, params->self, locals->triggerSource.lock().get(), locals->incomingData, nullptr));
  		CORO_END_IF
-@@ -1934,6 +2185,7 @@ bool TimerMessengerModifier::load(ModifierLoaderContext &context, const Data::Ti
+@@ -1934,6 +2191,7 @@ bool TimerMessengerModifier::load(ModifierLoaderContext &context, const Data::Ti
  
  	_milliseconds = data.minutes * (60 * 1000) + data.seconds * (1000) + data.hundredthsOfSeconds * 10;
  	_looping = ((data.messageAndTimerFlags & Data::TimerMessengerModifier::kTimerFlagLooping) != 0);
@@ -3260,7 +3397,7 @@ index 70051fcf1c..2300df0feb 100644
  
  	return true;
  }
-@@ -1954,6 +2206,13 @@ VThreadState TimerMessengerModifier::consumeMessage(Runtime *runtime, const Comm
+@@ -1954,6 +2212,13 @@ VThreadState TimerMessengerModifier::consumeMessage(Runtime *runtime, const Comm
  		if (realMilliseconds == 0)
  			realMilliseconds = 1;
  
@@ -3274,7 +3411,7 @@ index 70051fcf1c..2300df0feb 100644
  		_triggerSource = msg->getSource();
  
  		debug(3, "Timer %x '%s' scheduled to execute in %i milliseconds", getStaticGUID(), getName().c_str(), realMilliseconds);
-@@ -2187,7 +2446,14 @@ VThreadState CollisionDetectionMessengerModifier::enableTask(const EnableTaskDat
+@@ -2187,7 +2452,14 @@ VThreadState CollisionDetectionMessengerModifier::enableTask(const EnableTaskDat
  	if (!_isActive) {
  		_isActive = true;
  		_runtime->addCollider(this);
@@ -3290,7 +3427,7 @@ index 70051fcf1c..2300df0feb 100644
  	}
  	return kVThreadReturn;
  }
-@@ -2857,6 +3123,28 @@ bool CompoundVariableModifier::readAttribute(MiniscriptThread *thread, DynamicVa
+@@ -2857,6 +3129,28 @@ bool CompoundVariableModifier::readAttribute(MiniscriptThread *thread, DynamicVa
  		result.setObject(var->getSelfReference());
  		return true;
  	}
@@ -3319,7 +3456,7 @@ index 70051fcf1c..2300df0feb 100644
  	return Modifier::readAttribute(thread, result, attrib);
  }
  
-@@ -2868,10 +3156,49 @@ bool CompoundVariableModifier::readAttributeIndexed(MiniscriptThread *thread, Dy
+@@ -2868,10 +3162,49 @@ bool CompoundVariableModifier::readAttributeIndexed(MiniscriptThread *thread, Dy
  	return var->readAttributeIndexed(thread, result, "value", index);
  }
  
@@ -3370,7 +3507,7 @@ index 70051fcf1c..2300df0feb 100644
  
  	if (var->isVariable())
  		writeProxy = static_cast<VariableModifier *>(var)->createWriteProxy();
-@@ -3448,7 +3775,9 @@ bool PointVariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue
+@@ -3448,7 +3781,9 @@ bool PointVariableModifier::readAttribute(MiniscriptThread *thread, DynamicValue
  MiniscriptInstructionOutcome PointVariableModifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
  	PointVariableStorage *storage = static_cast<PointVariableStorage *>(_storage.get());
  
@@ -3381,7 +3518,7 @@ index 70051fcf1c..2300df0feb 100644
  		DynamicValueWriteIntegerHelper<int16>::create(&storage->_value.x, writeProxy);
  		return kMiniscriptInstructionOutcomeContinue;
  	}
-@@ -3457,7 +3786,7 @@ MiniscriptInstructionOutcome PointVariableModifier::writeRefAttribute(Miniscript
+@@ -3457,7 +3792,7 @@ MiniscriptInstructionOutcome PointVariableModifier::writeRefAttribute(Miniscript
  		return kMiniscriptInstructionOutcomeContinue;
  	}
  
@@ -3390,7 +3527,7 @@ index 70051fcf1c..2300df0feb 100644
  }
  
  #ifdef MTROPOLIS_DEBUG_ENABLE
-@@ -3505,6 +3834,10 @@ void PointVariableStorage::SaveLoad::saveInternal(Common::WriteStream *stream) c
+@@ -3505,6 +3840,10 @@ void PointVariableStorage::SaveLoad::saveInternal(Common::WriteStream *stream) c
  bool PointVariableStorage::SaveLoad::loadInternal(Common::ReadStream *stream, uint32 saveFileVersion) {
  	_value.x = stream->readSint16BE();
  	_value.y = stream->readSint16BE();
@@ -3401,7 +3538,7 @@ index 70051fcf1c..2300df0feb 100644
  
  	if (stream->err())
  		return false;
-@@ -3610,7 +3943,34 @@ bool StringVariableModifier::load(ModifierLoaderContext &context, const Data::St
+@@ -3610,7 +3949,34 @@ bool StringVariableModifier::load(ModifierLoaderContext &context, const Data::St
  
  bool StringVariableModifier::varSetValue(MiniscriptThread *thread, const DynamicValue &value) {
  	DynamicValue stringValue;
@@ -3437,7 +3574,7 @@ index 70051fcf1c..2300df0feb 100644
  		return false;
  
  	StringVariableStorage *storage = static_cast<StringVariableStorage *>(_storage.get());
-@@ -3620,6 +3980,60 @@ bool StringVariableModifier::varSetValue(MiniscriptThread *thread, const Dynamic
+@@ -3620,6 +3986,60 @@ bool StringVariableModifier::varSetValue(MiniscriptThread *thread, const Dynamic
  	return true;
  }
  
@@ -3627,7 +3764,7 @@ index f7527d50bd..e630169d06 100644
  
  	bool load(ModifierLoaderContext &context, const Data::StringVariableModifier &data);
 diff --git a/engines/mtropolis/mtropolis.cpp b/engines/mtropolis/mtropolis.cpp
-index e4866c0e81..a8c4cfb224 100644
+index e4866c0e81..c88c86a32c 100644
 --- a/engines/mtropolis/mtropolis.cpp
 +++ b/engines/mtropolis/mtropolis.cpp
 @@ -1,3 +1,4 @@
@@ -3792,7 +3929,7 @@ index e4866c0e81..a8c4cfb224 100644
  MTropolisEngine::MTropolisEngine(OSystem *syst, const MTropolisGameDescription *gameDesc) : Engine(syst), _gameDescription(gameDesc), _saveWriter(nullptr), _isTriggeredAutosave(false) {
  	const Common::FSNode gameDataDir(ConfMan.getPath("path"));
  	SearchMan.addSubDirectoryMatching(gameDataDir, "Resource");
-@@ -63,11 +188,382 @@ MTropolisEngine::MTropolisEngine(OSystem *syst, const MTropolisGameDescription *
+@@ -63,11 +188,450 @@ MTropolisEngine::MTropolisEngine(OSystem *syst, const MTropolisGameDescription *
  MTropolisEngine::~MTropolisEngine() {
  }
  
@@ -3928,6 +4065,74 @@ index e4866c0e81..a8c4cfb224 100644
 +	_sondeToolClickAt = _system->getMillis() + 150;
 +	Runtime::s_sondeLayoutClickableUntil = _sondeToolClickAt + 400;
 +	debug(1, "sonde tab '%s' (%d,%d)", v->getName().c_str(), c.x, c.y);
++}
++
++// Sonde Album : variable du jeu par son nom (modificateurs du projet et des scènes chargées, en profondeur)
++static Modifier *sondeFindModifier(const Common::Array<Common::SharedPtr<Modifier> > &mods, const Common::String &name, int depth) {
++	for (const Common::SharedPtr<Modifier> &m : mods) {
++		if (m->getName() == name)
++			return m.get();
++		IModifierContainer *c = m->getChildContainer();
++		if (c && depth < 4) {
++			Modifier *r = sondeFindModifier(c->getModifiers(), name, depth + 1);
++			if (r)
++				return r;
++		}
++	}
++	return nullptr;
++}
++
++static Modifier *sondeFindModifier(Structural *s, const Common::String &name, int depth) {
++	if (!s)
++		return nullptr;
++	Modifier *r = sondeFindModifier(s->getModifiers(), name, 0);
++	if (r || depth >= 3)
++		return r;
++	for (const Common::SharedPtr<Structural> &c : s->getChildren()) {
++		r = sondeFindModifier(c.get(), name, depth + 1);
++		if (r)
++			return r;
++	}
++	return nullptr;
++}
++
++static MTropolisEngine *s_sondeEngine = nullptr;
++
++// Sonde Album : page déchargée → sauvegarde de la partie en cours (seulement les pages d'un album ouvert)
++static void sondeSceneUnloaded(Structural *scene) {
++	if (s_sondeEngine && Runtime::s_sondeAlbumSlot > 0) {
++		debug(1, "sonde sauvegarde auto : page '%s' quittée", scene->getName().c_str());
++		s_sondeEngine->sondeAutoSave();
++	}
++}
++
++// Sonde Album : sauvegarde de la partie en cours, comme la scène « sauve » du jeu (sortie par le menu), dont les
++// modificateurs n'existent que pendant cette scène : on écrit directement leurs trois variables dans leurs fichiers
++bool MTropolisEngine::sondeAutoSave() {
++	const int slot = Runtime::s_sondeAlbumSlot;
++	if (slot <= 0) {
++		debug("sonde sauvegarde auto : partie inconnue, rien fait");
++		return false;
++	}
++	const struct { const char *var; Common::String file; } items[3] = {
++		{ "Liste_objets", Common::String::format("sauve%d", slot) },
++		{ "liste_photos", Common::String::format("photos%d.dat", slot) },
++		{ "l", "users.dat" },
++	};
++	int done = 0;
++	for (const auto &it : items) {
++		Modifier *var = sondeFindModifier(_runtime->getProject(), it.var, 0);
++		if (!var) {
++			debug("sonde sauvegarde auto : variable '%s' introuvable", it.var);
++			continue;
++		}
++		CompoundVarSaver saver(_runtime.get(), var);
++		if (namedSave(&saver, nullptr, it.file))
++			done++;
++		debug("sonde sauvegarde auto : '%s' -> '%s'", it.var, it.file.c_str());
++	}
++	debug("sonde sauvegarde auto : partie %d, %d/3 fichiers", slot, done);
++	return done == 3;
 +}
 +
 +void MTropolisEngine::sondeToolCommand(int index) {
@@ -4175,7 +4380,7 @@ index e4866c0e81..a8c4cfb224 100644
  		switch (evt.type) {
  		case Common::EVENT_LBUTTONDOWN:
  			_runtime->onMouseDown(evt.mouse.x, evt.mouse.y, MTropolis::Actions::kMouseButtonLeft);
-@@ -101,10 +597,1715 @@ void MTropolisEngine::handleEvents() {
+@@ -101,10 +665,1717 @@ void MTropolisEngine::handleEvents() {
  		default:
  			break;
  		}
@@ -4310,11 +4515,11 @@ index e4866c0e81..a8c4cfb224 100644
 +				Runtime::isStructuralMouseInteractive(v, kMouseInteractivityTestAnything) ? 1 : 0, v->isMouseCollisionAtPoint(rx, ry) ? 1 : 0);
 +		crx -= v->getRelativeRect().left;
 +		cry -= v->getRelativeRect().top;
- 	}
++	}
 +	for (const Common::SharedPtr<Structural> &child : s->getChildren())
 +		sondePick(child.get(), crx, cry, gx, gy);
- }
- 
++}
++
 +// Sonde Album : « cel NOM N » sur tous les mToon NOM
 +static int sondeSetCelByName(Structural *s, const char *name, int cel) {
 +	int n = 0;
@@ -4456,10 +4661,10 @@ index e4866c0e81..a8c4cfb224 100644
 +			}
 +		}
 +		n += sondeRotSetIn(runtime, m->getChildContainer(), deg);
-+	}
+ 	}
 +	return n;
-+}
-+
+ }
+ 
 +void MTropolisEngine::pollRemote() {
 +	if (_sondeSnapcamFrames > 0) {	// Sonde Album : guetteur « snapcam »
 +		_sondeSnapcamFrames--;
@@ -4577,6 +4782,8 @@ index e4866c0e81..a8c4cfb224 100644
 +				_runtime->onKeyboardEvent(Common::EVENT_KEYDOWN, false, ks);
 +				_runtime->onKeyboardEvent(Common::EVENT_KEYUP, false, ks);
 +			}
++		} else if (c == "autosave") {
++			sondeAutoSave();
 +		} else if (c == "wait") {
 +			_remoteWait = x;
 +		} else if (c == "stopat") {
@@ -5891,7 +6098,7 @@ index e4866c0e81..a8c4cfb224 100644
  #if !defined(USE_MPEG2)
  	if (_gameDescription->desc.flags & MTGF_WANT_MPEG_VIDEO) {
  		GUI::MessageDialog dialog(
-@@ -252,6 +2453,16 @@ Common::Error MTropolisEngine::run() {
+@@ -252,6 +2523,16 @@ Common::Error MTropolisEngine::run() {
  		}
  	}
  
@@ -5908,7 +6115,7 @@ index e4866c0e81..a8c4cfb224 100644
  	// If that fails, find one that's at least as good as the preferred mode
  	if (selectedMode == kColorDepthModeInvalid) {
  		for (int i = preferredColorDepthMode; i < kColorDepthModeCount; i++) {
-@@ -274,6 +2485,8 @@ Common::Error MTropolisEngine::run() {
+@@ -274,6 +2555,8 @@ Common::Error MTropolisEngine::run() {
  
  	if (selectedMode == kColorDepthModeInvalid)
  		error("Couldn't resolve a color depth mode");
@@ -5917,7 +6124,7 @@ index e4866c0e81..a8c4cfb224 100644
  
  	// Set up supported pixel modes
  	for (int i = 0; i < kColorDepthModeCount; i++) {
-@@ -310,6 +2523,12 @@ Common::Error MTropolisEngine::run() {
+@@ -310,6 +2593,12 @@ Common::Error MTropolisEngine::run() {
  	if (ConfMan.getBool("mtropolis_mod_minimum_transition_duration"))
  		_runtime->getHacks().minTransitionDuration = 75;
  
@@ -5930,8 +6137,28 @@ index e4866c0e81..a8c4cfb224 100644
  	// Apply game-specific mods and hacks
  	if (_gameDescription->gameID == GID_OBSIDIAN) {
  		HackSuites::addObsidianQuirks(*_gameDescription, _runtime->getHacks());
+@@ -333,6 +2622,10 @@ Common::Error MTropolisEngine::run() {
+ 	}
+ 
+ 
++	// Sonde Album : sauvegarde automatique à chaque page quittée (iOS ferme les apps en arrière-plan sans prévenir)
++	s_sondeEngine = this;
++	Runtime::s_sondeOnSceneUnload = sondeSceneUnloaded;
++
+ 	while (!shouldQuit()) {
+ 		handleEvents();
+ 
+@@ -343,6 +2636,8 @@ Common::Error MTropolisEngine::run() {
+ 		_system->delayMillis(10);
+ 	}
+ 
++	Runtime::s_sondeOnSceneUnload = nullptr;
++	s_sondeEngine = nullptr;
+ 	_runtime.reset();
+ 
+ 	return Common::kNoError;
 diff --git a/engines/mtropolis/mtropolis.h b/engines/mtropolis/mtropolis.h
-index eb54054c36..1359bb14ed 100644
+index eb54054c36..bad6aad48c 100644
 --- a/engines/mtropolis/mtropolis.h
 +++ b/engines/mtropolis/mtropolis.h
 @@ -46,6 +46,7 @@ namespace MTropolis {
@@ -5942,7 +6169,7 @@ index eb54054c36..1359bb14ed 100644
  
  class MTropolisEngine : public ::Engine, public ISaveUIProvider, public ILoadUIProvider, public IAutoSaveProvider {
  protected:
-@@ -77,6 +78,47 @@ public:
+@@ -77,6 +78,49 @@ public:
  
  public:
  	void handleEvents();
@@ -5970,6 +6197,8 @@ index eb54054c36..1359bb14ed 100644
 +	void sondeTouchRelease();
 +	void sondeUpdateLayout();	// Sonde Album : disposition tactile des pages du livre
 +	void sondeToolCommand(int index);
++public:
++	bool sondeAutoSave();	// Sonde Album : sauvegarde de la partie en cours comme la scène « sauve » du jeu
 +	// Sonde Album : menu iOS des marque-pages (liste publiée dans album_tabs ; l'indice du bouton = rang dans cette liste)
 +	Common::String _sondeLastTabs;
 +	Common::Array<Common::String> _sondeTabNames;
@@ -7898,7 +8127,7 @@ index 97ea606bf9..6bca370cb1 100644
  
  void convert32To16(Graphics::ManagedSurface &destSurface, const Graphics::ManagedSurface &srcSurface);
 diff --git a/engines/mtropolis/runtime.cpp b/engines/mtropolis/runtime.cpp
-index 0a9b567b41..a75e9469ad 100644
+index 0a9b567b41..816e049895 100644
 --- a/engines/mtropolis/runtime.cpp
 +++ b/engines/mtropolis/runtime.cpp
 @@ -20,6 +20,7 @@
@@ -8051,7 +8280,7 @@ index 0a9b567b41..a75e9469ad 100644
 +			Common::SharedPtr<Modifier> res = vr.resolution.lock();
 +			withStr += Common::String::format(" var '%s' #%x -> %p", vr.source.c_str(), vr.guid, (void *)res.get());
 +		}
-+		debug(1, "messenger '%s' @%p (parent @%p) link=%d dest=%x -> %s @%p | %s | data type %d", sender->getName().c_str(), (void *)sender, (void *)sender->getParent().lock().get(), (int)_linkType, destination,
++		debug(1, "messenger '%s' evt=%x/%x @%p (parent @%p) link=%d dest=%x -> %s @%p | %s | data type %d", sender->getName().c_str(), (unsigned)this->send.eventType, this->send.eventInfo, (void *)sender, (void *)sender->getParent().lock().get(), (int)_linkType, destination,
 +			structuralDest ? structuralDest->getName().c_str() : (modifierDest ? modifierDest->getName().c_str() : "(none)"),
 +			structuralDest ? (void *)structuralDest.get() : (void *)modifierDest.get(), (withStr + Common::String::format(" | casc=%d relay=%d imm=%d", (int)messageFlags.cascade, (int)messageFlags.relay, (int)messageFlags.immediate)).c_str(), (int)data.getType());
 +	}
@@ -8413,7 +8642,18 @@ index 0a9b567b41..a75e9469ad 100644
  	if ((cursor != _lastFrameCursor || !_lastFrameMouseVisible) && mouseVisible) {
  		CursorMan.showMouse(true);
  		CursorMan.replaceCursor(cursor->getCursor());
-@@ -5229,6 +5485,19 @@ void Runtime::executeSceneChangeRecursiveVisibilityChange(Structural *structural
+@@ -5188,6 +5444,10 @@ void Runtime::executeLowLevelSceneStateTransition(const LowLevelSceneStateTransi
+ 		refreshPlayTime();
+ 		break;
+ 	case LowLevelSceneStateTransitionAction::kUnload: {
++			// Sonde Album : la page quittée a rangé son état dans la partie, la suivante n'a pas encore pris le sien :
++			// moment sûr pour la sauvegarde automatique (iOS ferme les apps en arrière-plan sans prévenir)
++			if (s_sondeOnSceneUnload && action.getScene())
++				s_sondeOnSceneUnload(action.getScene().get());
+ 			Teardown teardown;
+ 			teardown.onlyRemoveChildren = true;
+ 			teardown.structural = action.getScene();
+@@ -5229,6 +5489,19 @@ void Runtime::executeSceneChangeRecursiveVisibilityChange(Structural *structural
  }
  
  void Runtime::executeChangeObjectParent(RuntimeObject *object, RuntimeObject *newParent) {
@@ -8433,7 +8673,7 @@ index 0a9b567b41..a75e9469ad 100644
  	// TODO: Should do circularity checks
  
  	if (object->isModifier()) {
-@@ -5285,7 +5554,23 @@ void Runtime::executeChangeObjectParent(RuntimeObject *object, RuntimeObject *ne
+@@ -5285,7 +5558,23 @@ void Runtime::executeChangeObjectParent(RuntimeObject *object, RuntimeObject *ne
  		Structural *newParentStructural = static_cast<Structural *>(newParent);
  
  		oldParent->removeChild(structural.get());
@@ -8458,7 +8698,7 @@ index 0a9b567b41..a75e9469ad 100644
  
  		{
  			Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(EventIDs::kParentChanged, 0), DynamicValue(), structural->getSelfReference()));
-@@ -5296,6 +5581,8 @@ void Runtime::executeChangeObjectParent(RuntimeObject *object, RuntimeObject *ne
+@@ -5296,6 +5585,8 @@ void Runtime::executeChangeObjectParent(RuntimeObject *object, RuntimeObject *ne
  }
  
  void Runtime::executeCloneObject(RuntimeObject *object) {
@@ -8467,7 +8707,7 @@ index 0a9b567b41..a75e9469ad 100644
  	Common::HashMap<RuntimeObject *, RuntimeObject *> objectRemaps;
  
  	if (object->isModifier()) {
-@@ -5343,9 +5630,10 @@ void Runtime::executeCloneObject(RuntimeObject *object) {
+@@ -5343,9 +5634,10 @@ void Runtime::executeCloneObject(RuntimeObject *object) {
  		ObjectRefRemapper remapper(objectRemaps);
  		remapper.visitChildStructuralRef(structuralRef);
  
@@ -8480,7 +8720,7 @@ index 0a9b567b41..a75e9469ad 100644
  
  		{
  			Common::SharedPtr<MessageProperties> msgProps(new MessageProperties(Event(EventIDs::kClone, 0), DynamicValue(), structuralRef));
-@@ -5791,6 +6079,65 @@ bool Runtime::isModifierMouseInteractive(Modifier *modifier, MouseInteractivityT
+@@ -5791,6 +6083,67 @@ bool Runtime::isModifierMouseInteractive(Modifier *modifier, MouseInteractivityT
  	return false;
  }
  
@@ -8542,11 +8782,13 @@ index 0a9b567b41..a75e9469ad 100644
 +}
 +
 +uint32 Runtime::s_sondeLayoutClickableUntil = 0;
++int Runtime::s_sondeAlbumSlot = 0;
++void (*Runtime::s_sondeOnSceneUnload)(Structural *scene) = nullptr;
 +
  void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLayer, int32 &bestStackHeight, bool &bestDirect, Structural *candidate, int32 stackHeight, int32 relativeX, int32 relativeY, MouseInteractivityTestType testType) {
  	int32 childRelativeX = relativeX;
  	int32 childRelativeY = relativeY;
-@@ -5798,6 +6145,21 @@ void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLa
+@@ -5798,6 +6151,21 @@ void Runtime::recursiveFindMouseCollision(Structural *&bestResult, int32 &bestLa
  		Element *element = static_cast<Element *>(candidate);
  		if (element->isVisual()) {
  			VisualElement *visual = static_cast<VisualElement *>(candidate);
@@ -8568,7 +8810,7 @@ index 0a9b567b41..a75e9469ad 100644
  
  			if (visual->isVisible()) {
  				int layer = visual->getLayer();
-@@ -5882,6 +6244,11 @@ CORO_BEGIN_DEFINITION(Runtime::SendMessageOnVThreadCoroutine)
+@@ -5882,6 +6250,11 @@ CORO_BEGIN_DEFINITION(Runtime::SendMessageOnVThreadCoroutine)
  	CORO_END_FUNCTION
  CORO_END_DEFINITION
  
@@ -8580,7 +8822,7 @@ index 0a9b567b41..a75e9469ad 100644
  void Runtime::sendMessageOnVThread(const Common::SharedPtr<MessageDispatch> &dispatch) {
  	EventIDs::EventID eventID = dispatch->getMsg()->getEvent().eventType;
  
-@@ -5889,6 +6256,28 @@ void Runtime::sendMessageOnVThread(const Common::SharedPtr<MessageDispatch> &dis
+@@ -5889,6 +6262,28 @@ void Runtime::sendMessageOnVThread(const Common::SharedPtr<MessageDispatch> &dis
  	if (eventID == 1 || eventID == 0)
  		return;
  
@@ -8609,7 +8851,7 @@ index 0a9b567b41..a75e9469ad 100644
  #ifndef DISABLE_TEXT_CONSOLE
  	const int msgDebugLevel = 3;
  
-@@ -6347,6 +6736,8 @@ VThreadState Runtime::updateMouseStateTask(const UpdateMouseStateTaskData &data)
+@@ -6347,6 +6742,8 @@ VThreadState Runtime::updateMouseStateTask(const UpdateMouseStateTaskData &data)
  			recursiveFindMouseCollision(tracked, bestSceneStack, bestLayer, bestDirect, sceneStackEntry.scene.get(), _sceneStack.size() - 1 - ri, _cachedMousePosition.x, _cachedMousePosition.y, kMouseInteractivityTestMouseClick);
  		}
  
@@ -8618,7 +8860,7 @@ index 0a9b567b41..a75e9469ad 100644
  		if (tracked) {
  			_mouseTrackingObject = tracked->getSelfReference().staticCast<Structural>();
  			_mouseTrackingDragStart = _cachedMousePosition;
-@@ -6471,6 +6862,11 @@ VThreadState Runtime::updateMousePositionTask(const UpdateMousePositionTaskData
+@@ -6471,6 +6868,11 @@ VThreadState Runtime::updateMousePositionTask(const UpdateMousePositionTaskData
  		Common::Point parentOrigin = visual->getParentOrigin();
  		int32 relativeX = data.x - parentOrigin.x;
  		int32 relativeY = data.y - parentOrigin.y;
@@ -8630,7 +8872,7 @@ index 0a9b567b41..a75e9469ad 100644
  		bool mouseOutside = !visual->isMouseInsideDrawableArea(relativeX, relativeY) || !visual->isMouseCollisionAtPoint(relativeX, relativeY);
  
  		if (mouseOutside != _trackedMouseOutside) {
-@@ -6613,6 +7009,7 @@ void Runtime::instantiateIfAlias(Common::SharedPtr<Modifier> &modifier, const Co
+@@ -6613,6 +7015,7 @@ void Runtime::instantiateIfAlias(Common::SharedPtr<Modifier> &modifier, const Co
  		clonedModifier->setParent(relinkParent);
  
  		ModifierChildCloner cloner(this, clonedModifier);
@@ -8638,7 +8880,7 @@ index 0a9b567b41..a75e9469ad 100644
  		clonedModifier->visitInternalReferences(&cloner);
  
  		// Aliased variables use the same variable storage, but are treated as distinct objects.
-@@ -6705,7 +7102,76 @@ void Runtime::onMouseUp(int32 x, int32 y, Actions::MouseButton mButton) {
+@@ -6705,7 +7108,76 @@ void Runtime::onMouseUp(int32 x, int32 y, Actions::MouseButton mButton) {
  		_mouseFocusWindow.reset();
  }
  
@@ -8715,7 +8957,7 @@ index 0a9b567b41..a75e9469ad 100644
  	Common::SharedPtr<Window> focusWindow = _keyFocusWindow.lock();
  	if (focusWindow)
  		focusWindow->onKeyboardEvent(evtType, repeat, keyEvt);
-@@ -6918,7 +7384,8 @@ void Runtime::checkCollisions(ICollider *optRestrictToCollider) {
+@@ -6918,7 +7390,8 @@ void Runtime::checkCollisions(ICollider *optRestrictToCollider) {
  		for (size_t oldIndex = 0; oldIndex < oldCollidingElements.size();) {
  			Common::SharedPtr<VisualElement> oldColElement = oldCollidingElements[oldIndex].lock();
  			if (oldColElement.get() == nullptr) {
@@ -8725,7 +8967,7 @@ index 0a9b567b41..a75e9469ad 100644
  				continue;
  			}
  
-@@ -6965,10 +7432,11 @@ void Runtime::updateCursorElementPosition() {
+@@ -6965,10 +7438,11 @@ void Runtime::updateCursorElementPosition() {
  		return;
  
  	Common::Point elementPos = element->getGlobalPosition();
@@ -8740,7 +8982,7 @@ index 0a9b567b41..a75e9469ad 100644
  	}
  }
  
-@@ -8522,6 +8990,91 @@ void Project::initAdditionalSegments(const Common::String &projectName) {
+@@ -8522,6 +8996,91 @@ void Project::initAdditionalSegments(const Common::String &projectName) {
  	}
  }
  
@@ -8832,7 +9074,7 @@ index 0a9b567b41..a75e9469ad 100644
  void Project::loadContextualObject(size_t streamIndex, ChildLoaderStack &stack, const Data::DataObject &dataObject) {
  	ChildLoaderContext &topContext = stack.contexts.back();
  	const Data::DataObjectTypes::DataObjectType dataObjectType = dataObject.getType();
-@@ -9043,6 +9596,9 @@ CORO_BEGIN_DEFINITION(VisualElement::VisualElementConsumeCommandCoroutine)
+@@ -9043,6 +9602,9 @@ CORO_BEGIN_DEFINITION(VisualElement::VisualElementConsumeCommandCoroutine)
  
  	CORO_BEGIN_FUNCTION
  		CORO_IF(Event(EventIDs::kElementShow, 0).respondsTo(params->msg->getEvent()))
@@ -8842,7 +9084,7 @@ index 0a9b567b41..a75e9469ad 100644
  			if (!params->self->_visible) {
  				params->self->_visible = true;
  				params->runtime->setSceneGraphDirty();
-@@ -9055,6 +9611,17 @@ CORO_BEGIN_DEFINITION(VisualElement::VisualElementConsumeCommandCoroutine)
+@@ -9055,6 +9617,17 @@ CORO_BEGIN_DEFINITION(VisualElement::VisualElementConsumeCommandCoroutine)
  
  			CORO_RETURN;
  		CORO_ELSE_IF(Event(EventIDs::kElementHide, 0).respondsTo(params->msg->getEvent()))
@@ -8860,7 +9102,7 @@ index 0a9b567b41..a75e9469ad 100644
  			if (params->self->_visible) {
  				params->self->_visible = false;
  
-@@ -9266,6 +9833,10 @@ bool VisualElement::readAttribute(MiniscriptThread *thread, DynamicValue &result
+@@ -9266,6 +9839,10 @@ bool VisualElement::readAttribute(MiniscriptThread *thread, DynamicValue &result
  }
  
  MiniscriptInstructionOutcome VisualElement::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
@@ -8871,7 +9113,7 @@ index 0a9b567b41..a75e9469ad 100644
  	if (attrib == "visible") {
  		DynamicValueWriteFuncHelper<VisualElement, &VisualElement::scriptSetVisibility, true>::create(this, writeProxy);
  		return kMiniscriptInstructionOutcomeContinue;
-@@ -9383,12 +9954,14 @@ void VisualElement::handleDragMotion(Runtime *runtime, const Common::Point &init
+@@ -9383,12 +9960,14 @@ void VisualElement::handleDragMotion(Runtime *runtime, const Common::Point &init
  
  		if (targetPoint.y > maxY)
  			targetPoint.y = maxY;
@@ -8890,7 +9132,7 @@ index 0a9b567b41..a75e9469ad 100644
  }
  
  VThreadState VisualElement::offsetTranslateTask(const OffsetTranslateTaskData &data) {
-@@ -9485,6 +10058,12 @@ MiniscriptInstructionOutcome VisualElement::scriptSetVisibility(MiniscriptThread
+@@ -9485,6 +10064,12 @@ MiniscriptInstructionOutcome VisualElement::scriptSetVisibility(MiniscriptThread
  		if (_visible != targetValue) {
  			_visible = targetValue;
  			thread->getRuntime()->setSceneGraphDirty();
@@ -8903,7 +9145,7 @@ index 0a9b567b41..a75e9469ad 100644
  		}
  		return kMiniscriptInstructionOutcomeContinue;
  	}
-@@ -9515,6 +10094,49 @@ MiniscriptInstructionOutcome VisualElement::scriptSetDirect(MiniscriptThread *th
+@@ -9515,6 +10100,49 @@ MiniscriptInstructionOutcome VisualElement::scriptSetDirect(MiniscriptThread *th
  	return kMiniscriptInstructionOutcomeFailed;
  }
  
@@ -8953,7 +9195,7 @@ index 0a9b567b41..a75e9469ad 100644
  MiniscriptInstructionOutcome VisualElement::scriptSetPosition(MiniscriptThread *thread, const DynamicValue &value) {
  	if (value.getType() == DynamicValueTypes::kPoint) {
  		Common::Point destPoint = value.getPoint();
-@@ -9669,11 +10291,12 @@ MiniscriptInstructionOutcome VisualElement::scriptSetLayer(MiniscriptThread *thr
+@@ -9669,11 +10297,12 @@ MiniscriptInstructionOutcome VisualElement::scriptSetLayer(MiniscriptThread *thr
  	if (asInteger != _layer) {
  		VisualElement *scene = findScene();
  
@@ -8971,7 +9213,7 @@ index 0a9b567b41..a75e9469ad 100644
  		}
  		_layer = asInteger;
  
-@@ -9774,6 +10397,19 @@ VThreadState VisualElement::changeVisibilityTask(const ChangeFlagTaskData &taskD
+@@ -9774,6 +10403,19 @@ VThreadState VisualElement::changeVisibilityTask(const ChangeFlagTaskData &taskD
  	return kVThreadReturn;
  }
  
@@ -8991,7 +9233,7 @@ index 0a9b567b41..a75e9469ad 100644
  VisualElement *VisualElement::recursiveFindItemWithLayer(VisualElement *element, int32 layer) {
  	if (element->_layer == layer)
  		return element;
-@@ -10105,7 +10741,15 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
+@@ -10105,7 +10747,15 @@ bool Modifier::readAttribute(MiniscriptThread *thread, DynamicValue &result, con
  
  MiniscriptInstructionOutcome Modifier::writeRefAttribute(MiniscriptThread *thread, DynamicValueWriteProxy &writeProxy, const Common::String &attrib) {
  	if (attrib == "parent") {
@@ -9009,7 +9251,7 @@ index 0a9b567b41..a75e9469ad 100644
  	} else if (attrib == "name") {
  		DynamicValueWriteStringHelper::create(&_name, writeProxy);
 diff --git a/engines/mtropolis/runtime.h b/engines/mtropolis/runtime.h
-index fef072a29c..bb35a52dd7 100644
+index fef072a29c..86f9569c46 100644
 --- a/engines/mtropolis/runtime.h
 +++ b/engines/mtropolis/runtime.h
 @@ -1633,6 +1633,10 @@ public:
@@ -9023,7 +9265,7 @@ index fef072a29c..bb35a52dd7 100644
  
  	struct SendMessageOnVThreadCoroutine {
  		CORO_DEFINE_RETURN_TYPE(void);
-@@ -1691,6 +1695,24 @@ public:
+@@ -1691,6 +1695,26 @@ public:
  	void checkCollisions(ICollider *optRestrictToCollider);
  
  	void setCursorElement(const Common::WeakPtr<VisualElement> &element);
@@ -9040,7 +9282,9 @@ index fef072a29c..bb35a52dd7 100644
 +	static int s_sondeLayoutCropBottom;	// 0 = disposition inactive
 +	static int s_sondeLayoutCropTop;
 +	static int sondeLayoutShift(const VisualElement *v);	// décalage vertical à l'écran, ou kSondeLayoutHidden
-+	static uint32 s_sondeLayoutClickableUntil;	// boutons iOS : barre du bas de nouveau cliquable (invisible) jusqu'à cet instant
++	static uint32 s_sondeLayoutClickableUntil;
++	static int s_sondeAlbumSlot;	// album (partie) en cours : N de « sauveN », 0 = inconnu
++	static void (*s_sondeOnSceneUnload)(Structural *scene);	// sauvegarde automatique au déchargement d'une page	// boutons iOS : barre du bas de nouveau cliquable (invisible) jusqu'à cet instant
 +	Common::WeakPtr<VisualElement> _sondeEditLabel;
 +	bool _sondeKeyboardOn = false;	// Sonde Album : clavier virtuel ouvert pour la saisie
 +	// Sonde Album : point d'accroche de l'élément qui suit le curseur (WorldManager.cursorhotspot)
@@ -9048,7 +9292,7 @@ index fef072a29c..bb35a52dd7 100644
  	void updateCursorElementPosition();
  
  	void addBoundaryDetector(IBoundaryDetector *boundaryDetector);
-@@ -1849,13 +1871,17 @@ private:
+@@ -1849,13 +1873,17 @@ private:
  	void recursiveDeactivateStructural(Structural *structural);
  	void recursiveActivateStructural(Structural *structural);
  
@@ -9066,7 +9310,7 @@ index fef072a29c..bb35a52dd7 100644
  
  	void ensureMainWindowExists();
  
-@@ -2141,6 +2167,7 @@ private:
+@@ -2141,6 +2169,7 @@ private:
  	MiniscriptInstructionOutcome setAutoResetCursor(MiniscriptThread *thread, const DynamicValue &value);
  	MiniscriptInstructionOutcome setWinSndBufferSize(MiniscriptThread *thread, const DynamicValue &value);
  	MiniscriptInstructionOutcome setCursor(MiniscriptThread *thread, const DynamicValue &value);
@@ -9074,7 +9318,7 @@ index fef072a29c..bb35a52dd7 100644
  
  	int32 _opInt;
  	bool _gameMode;
-@@ -2214,6 +2241,7 @@ public:
+@@ -2214,6 +2243,7 @@ public:
  
  	const Common::Array<Common::SharedPtr<Structural> > &getChildren() const;
  	void addChild(const Common::SharedPtr<Structural> &child);
@@ -9082,7 +9326,7 @@ index fef072a29c..bb35a52dd7 100644
  	void removeAllChildren();
  	void removeAllModifiers();
  	void removeChild(Structural *child);
-@@ -2593,6 +2621,10 @@ private:
+@@ -2593,6 +2623,10 @@ private:
  	void loadGlobalObjectInfo(ChildLoaderStack &loaderStack, const Data::GlobalObjectInfo &globalObjectInfo);
  	void loadAssetDef(size_t streamIndex, AssetDefLoaderContext &context, const Data::DataObject &dataObject);
  	void loadContextualObject(size_t streamIndex, ChildLoaderStack &stack, const Data::DataObject &dataObject);
@@ -9093,7 +9337,7 @@ index fef072a29c..bb35a52dd7 100644
  	Common::SharedPtr<Modifier> loadModifierObject(ModifierLoaderContext &loaderContext, const Data::DataObject &dataObject);
  	void loadLabelMap(const Data::ProjectLabelMap &projectLabelMap);
  	static size_t recursiveCountLabels(const Data::ProjectLabelMap::LabelTree &tree);
-@@ -2869,6 +2901,16 @@ public:
+@@ -2869,6 +2903,16 @@ public:
  	// The cached absolute origin is from the last time the element was rendered.
  	// Do not rely on it mid-frame.
  	const Common::Point &getCachedAbsoluteOrigin() const;
@@ -9110,7 +9354,7 @@ index fef072a29c..bb35a52dd7 100644
  	void setCachedAbsoluteOrigin(const Common::Point &absOrigin);
  
  	void setDragMotionProperties(const Common::SharedPtr<DragMotionProperties> &dragProps);
-@@ -2886,6 +2928,7 @@ public:
+@@ -2886,6 +2930,7 @@ public:
  	VThreadState offsetTranslateTask(const OffsetTranslateTaskData &data);
  
  	void setRenderProperties(const VisualElementRenderProperties &props, const Common::WeakPtr<GraphicModifier> &primaryGraphicModifier);
@@ -9118,7 +9362,7 @@ index fef072a29c..bb35a52dd7 100644
  	const VisualElementRenderProperties &getRenderProperties() const;
  	const Common::WeakPtr<GraphicModifier> &getPrimaryGraphicModifier() const;
  
-@@ -2916,6 +2959,10 @@ protected:
+@@ -2916,6 +2961,10 @@ protected:
  
  	MiniscriptInstructionOutcome scriptSetDirect(MiniscriptThread *thread, const DynamicValue &dest);
  	MiniscriptInstructionOutcome scriptSetPosition(MiniscriptThread *thread, const DynamicValue &dest);
@@ -9129,7 +9373,7 @@ index fef072a29c..bb35a52dd7 100644
  	MiniscriptInstructionOutcome scriptSetPositionX(MiniscriptThread *thread, const DynamicValue &dest);
  	MiniscriptInstructionOutcome scriptSetPositionY(MiniscriptThread *thread, const DynamicValue &dest);
  	MiniscriptInstructionOutcome scriptSetCenterPosition(MiniscriptThread *thread, const DynamicValue &dest);
-@@ -2951,6 +2998,7 @@ protected:
+@@ -2951,6 +3000,7 @@ protected:
  	VThreadState changeVisibilityTask(const ChangeFlagTaskData &taskData);
  
  	static VisualElement *recursiveFindItemWithLayer(VisualElement *element, int32 layer);
@@ -9137,7 +9381,7 @@ index fef072a29c..bb35a52dd7 100644
  
  	void renderShading(Graphics::Surface &surf) const;
  
-@@ -3136,6 +3184,8 @@ public:
+@@ -3136,6 +3186,8 @@ public:
  
  	virtual bool varSetValue(MiniscriptThread *thread, const DynamicValue &value) = 0;
  	virtual void varGetValue(DynamicValue &dest) const = 0;
@@ -9204,3 +9448,16 @@ index fc0c3b9fb3..8044c3df3e 100644
  
  	bool hasTasks() const;
  
+diff --git a/ports.mk b/ports.mk
+index 261b52002a..d140d9084d 100644
+--- a/ports.mk
++++ b/ports.mk
+@@ -621,7 +621,7 @@ scummvm-static-ios: $(DETECT_OBJS) $(OBJS)
+ 		$(OSX_STATIC_LIBS) \
+ 		-framework UIKit -framework CoreGraphics -framework OpenGLES -framework GameController \
+ 		-framework CoreFoundation -framework QuartzCore -framework Foundation \
+-		-framework AudioToolbox -framework CoreAudio -framework CoreMIDI \
++		-framework AudioToolbox -framework CoreAudio -framework CoreMIDI -framework AVFoundation \
+ 		-framework SystemConfiguration -lobjc -lz
+ 
+ # Special target to create a snapshot disk image for macOS

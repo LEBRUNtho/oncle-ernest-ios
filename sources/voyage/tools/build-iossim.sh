@@ -16,6 +16,8 @@ if [ ! -f config.mk ]; then
     --disable-cloud --disable-libunity --disable-discord --disable-sparkle --disable-lua --disable-nasm --disable-opengl-game --disable-opengl-game-shaders > /tmp/iossim_cfg.log
   sed -i '' 's/-miphoneos-version-min=7.1/-mios-simulator-version-min=15.0/g' config.mk
 fi
+# iPhone : maintien en vie en arrière-plan (silence joué, AVAudioSession) → AVFoundation
+grep -q 'framework AVFoundation' config.mk || sed -i '' 's/-framework AudioToolbox/-framework AVFoundation -framework AudioToolbox/' config.mk
 make -j$(sysctl -n hw.ncpu) > /tmp/iossim_build.log 2>&1 || { grep -E " error" /tmp/iossim_build.log | head; exit 1; }
 make ios7bundle OSX_STATIC_LIBS="" > /tmp/iossim_bundle.log 2>&1
 APP=$B/VoyageErnestSim.app; rm -rf $APP; cp -R ScummVM.app $APP; rm -rf $APP/_CodeSignature
@@ -38,6 +40,10 @@ album_remote=true/' $APP/scummvm.ini
 /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:0 string UIInterfaceOrientationLandscapeLeft" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:1 string UIInterfaceOrientationLandscapeRight" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Set :UIRequiresFullScreen true" $APP/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool true" $APP/Info.plist
+# lecteur audio d'arrière-plan : iOS ne ferme plus l'app quand on en sort (reprise instantanée)
+/usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" $APP/Info.plist 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" $APP/Info.plist
+/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Delete :UIStatusBarHidden" $APP/Info.plist 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :UIStatusBarHidden bool true" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Delete :UIViewControllerBasedStatusBarAppearance" $APP/Info.plist 2>/dev/null || true

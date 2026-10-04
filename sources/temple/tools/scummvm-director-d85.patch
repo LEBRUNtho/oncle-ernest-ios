@@ -1,5 +1,5 @@
 diff --git a/backends/graphics/ios/ios-graphics.cpp b/backends/graphics/ios/ios-graphics.cpp
-index b31cf3484d..407771abfb 100644
+index b31cf3484d..be84c32e4b 100644
 --- a/backends/graphics/ios/ios-graphics.cpp
 +++ b/backends/graphics/ios/ios-graphics.cpp
 @@ -21,6 +21,7 @@
@@ -10,12 +10,15 @@ index b31cf3484d..407771abfb 100644
  #include "backends/graphics/ios/renderbuffer.h"
  #include "backends/graphics/opengl/pipelines/pipeline.h"
  #include "backends/platform/ios7/ios7_osys_main.h"
-@@ -102,6 +103,28 @@ float iOSGraphicsManager::getHiDPIScreenFactor() const {
+@@ -102,6 +103,31 @@ float iOSGraphicsManager::getHiDPIScreenFactor() const {
  	return dynamic_cast<OSystem_iOS7 *>(g_system)->getSystemHiDPIScreenFactor();
  }
  
 +// Sonde Album : après chaque image, prévenir l'interface iOS si les outils visibles ou la place du jeu ont changé
 +void iOSGraphicsManager::updateScreen() {
++	// Sonde Album : pendant la sauvegarde qui précède le gel, rien n'est dessiné (OpenGL interdit en arrière-plan)
++	if (dynamic_cast<OSystem_iOS7 *>(g_system)->sondeSuspendPending())
++		return;
 +	OpenGL::OpenGLGraphicsManager::updateScreen();
 +	if (ConfMan.hasKey("album_print", Common::ConfigManager::kTransientDomain)) {
 +		const Common::String name = ConfMan.get("album_print", Common::ConfigManager::kTransientDomain);
@@ -507,18 +510,34 @@ index f2b987b1ca..b38db212ab 100644
  }
  
 diff --git a/backends/platform/ios7/ios7_osys_events.cpp b/backends/platform/ios7/ios7_osys_events.cpp
-index 6263d2014a..fbe5ff60ac 100644
+index 6263d2014a..d9043cbbc4 100644
 --- a/backends/platform/ios7/ios7_osys_events.cpp
 +++ b/backends/platform/ios7/ios7_osys_events.cpp
-@@ -27,6 +27,7 @@
+@@ -25,8 +25,10 @@
+ #include "gui/message.h"
+ #include "common/translation.h"
  #include "common/config-manager.h"
++#include "engines/engine.h"
  #include "backends/graphics/ios/ios-graphics.h"
  #include "backends/platform/ios7/ios7_osys_main.h"
 +#include <TargetConditionals.h>	// Sonde Album
  
  static const int kQueuedInputEventDelay = 50;
  
-@@ -41,6 +42,31 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+@@ -35,12 +37,44 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+ 
+ 	long curTime = getMillis();
+ 
++	// Sonde Album : app quittée pendant une partie : le jeu a eu sa chance de sauvegarder (ou le délai est écoulé), on gèle
++	if (_sondeSuspendAt && (curTime >= _sondeSuspendAt || (ConfMan.hasKey("album_suspend_saved", Common::ConfigManager::kTransientDomain) && ConfMan.getBool("album_suspend_saved", Common::ConfigManager::kTransientDomain)))) {
++		_sondeSuspendAt = 0;
++		ConfMan.setBool("album_suspend_saved", false, Common::ConfigManager::kTransientDomain);
++		suspendLoop();
++	}
++
+ 	if (_queuedInputEvent.type != Common::EVENT_INVALID && curTime >= _queuedEventTime) {
+ 		event = _queuedInputEvent;
+ 		_queuedInputEvent.type = Common::EVENT_INVALID;
  		return true;
  	}
  
@@ -550,7 +569,32 @@ index 6263d2014a..fbe5ff60ac 100644
  	InternalEvent internalEvent;
  
  	if (iOS7_fetchEvent(&internalEvent)) {
-@@ -150,6 +176,32 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+@@ -80,10 +114,24 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
+ 			return false;
+ 
+ 		case kInputApplicationSuspended:
++			// Sonde Album : le jeu sait sauvegarder sa partie : on le prévient ('ALSV') et on ne gèle qu'après sa
++			// sauvegarde (au plus 1,5 s, sans rien dessiner entre-temps), iOS pouvant fermer l'app une fois en arrière-plan
++			if (g_engine && ConfMan.hasKey("album_save_on_suspend", Common::ConfigManager::kTransientDomain) && ConfMan.getBool("album_save_on_suspend", Common::ConfigManager::kTransientDomain)) {
++				if (!_sondeSuspendAt) {
++					_sondeSuspendAt = getMillis() + 1500;
++					ConfMan.setBool("album_suspend_saved", false, Common::ConfigManager::kTransientDomain);
++					event.type = Common::EVENT_MOUSEMOVE;
++					event.mouse = getEventManager()->getMousePos();	// le pointeur ne bouge pas
++					event.customType = 0x414C5356;	// 'ALSV'
++					return true;
++				}
++				return false;
++			}
+ 			handleEvent_applicationSuspended();
+ 			return false;
+ 
+ 		case kInputApplicationResumed:
++			_sondeSuspendAt = 0;	// revenu avant le gel différé : rien à geler
+ 			handleEvent_applicationResumed();
+ 			return false;
+ 
+@@ -150,6 +198,32 @@ bool OSystem_iOS7::pollEvent(Common::Event &event) {
  			handleEvent_touchModeChanged();
  			break;
  
@@ -583,7 +627,7 @@ index 6263d2014a..fbe5ff60ac 100644
  		default:
  			break;
  		}
-@@ -166,11 +218,28 @@ bool OSystem_iOS7::handleEvent_touchBegan(Common::Event &event, int x, int y) {
+@@ -166,11 +240,28 @@ bool OSystem_iOS7::handleEvent_touchBegan(Common::Event &event, int x, int y) {
  	if (_currentTouchMode == kTouchModeDirect) {
  		Common::Point mouse(x, y);
  		dynamic_cast<iOSGraphicsManager *>(_graphicsManager)->notifyMousePosition(mouse);
@@ -613,10 +657,21 @@ index 6263d2014a..fbe5ff60ac 100644
  	int deltaX = _lastPadX - x;
  	int deltaY = _lastPadY - y;
 diff --git a/backends/platform/ios7/ios7_osys_main.h b/backends/platform/ios7/ios7_osys_main.h
-index da33e2ef0a..14bca37a38 100644
+index da33e2ef0a..4be6c06c66 100644
 --- a/backends/platform/ios7/ios7_osys_main.h
 +++ b/backends/platform/ios7/ios7_osys_main.h
-@@ -190,6 +190,7 @@ protected:
+@@ -64,6 +64,10 @@ protected:
+ 
+ 	long _lastMouseDown;
+ 	long _queuedEventTime;
++	long _sondeSuspendAt = 0;	// Sonde Album : gel différé (le jeu sauvegarde d'abord), 0 = aucun
++public:
++	bool sondeSuspendPending() const { return _sondeSuspendAt != 0; }
++protected:
+ 	Common::Event _queuedInputEvent;
+ 	TouchMode _currentTouchMode;
+ 	int _lastPadX;
+@@ -190,6 +194,7 @@ protected:
  	void handleEvent_applicationClearState();
  
  	bool handleEvent_touchBegan(Common::Event &event, int x, int y);
@@ -650,6 +705,81 @@ index b1d5a0dee2..7dbc4e5cc6 100644
  			execute_on_main_thread(^ {
  				[[iOS7AppDelegate iPhoneView] hideKeyboard];
  			});
+diff --git a/backends/platform/ios7/ios7_scene_delegate.mm b/backends/platform/ios7/ios7_scene_delegate.mm
+index 2f92bd0392..d594efc8c2 100644
+--- a/backends/platform/ios7/ios7_scene_delegate.mm
++++ b/backends/platform/ios7/ios7_scene_delegate.mm
+@@ -19,10 +19,58 @@
+  *
+  */
+ 
++// Sonde Album : avant les en-têtes ScummVM (common/forbidden.h interdit FILE, utilisé par AudioToolbox)
++#import <AVFoundation/AVFoundation.h>
+ #include "backends/platform/ios7/ios7_scene_delegate.h"
+ #include "backends/platform/ios7/ios7_app_delegate.h"
+ #include "backends/platform/ios7/ios7_video.h"
+ 
++// Sonde Album : iOS ferme vite les apps en arrière-plan (perte de la partie en cours). En arrière-plan, l'app joue un
++// silence en boucle (mode audio d'arrière-plan, UIBackgroundModes = audio) : comme un lecteur de musique, elle reste en
++// vie, le jeu en pause en mémoire, et reprend instantanément. Mélangé aux autres sons (la musique de l'utilisateur
++// continue) ; au retour, la catégorie audio d'origine est rendue (bouton silencieux respecté pendant le jeu).
++static AVAudioPlayer *s_albumKeepAlive = nil;
++static NSString *s_albumPrevCategory = nil;
++static AVAudioSessionCategoryOptions s_albumPrevOptions = 0;
++
++static NSData *albumSilenceWav() {
++	const uint32_t rate = 8000, samples = rate;	// 1 s, mono, 16 bits
++	NSMutableData *d = [NSMutableData dataWithLength:44 + samples * 2];
++	uint8_t *p = (uint8_t *)d.mutableBytes;
++	const uint32_t dataLen = samples * 2, riffLen = 36 + dataLen, fmtLen = 16, byteRate = rate * 2;
++	const uint16_t pcm = 1, mono = 1, align = 2, bits = 16;
++	memcpy(p, "RIFF", 4); memcpy(p + 4, &riffLen, 4); memcpy(p + 8, "WAVEfmt ", 8); memcpy(p + 16, &fmtLen, 4);
++	memcpy(p + 20, &pcm, 2); memcpy(p + 22, &mono, 2); memcpy(p + 24, &rate, 4); memcpy(p + 28, &byteRate, 4);
++	memcpy(p + 32, &align, 2); memcpy(p + 34, &bits, 2); memcpy(p + 36, "data", 4); memcpy(p + 40, &dataLen, 4);
++	return d;
++}
++
++static void albumKeepAliveStart() {
++	if (s_albumKeepAlive)
++		return;
++	AVAudioSession *session = [AVAudioSession sharedInstance];
++	[s_albumPrevCategory release];
++	s_albumPrevCategory = [session.category copy];
++	s_albumPrevOptions = session.categoryOptions;
++	[session setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
++	[session setActive:YES error:nil];
++	s_albumKeepAlive = [[AVAudioPlayer alloc] initWithData:albumSilenceWav() error:nil];
++	s_albumKeepAlive.numberOfLoops = -1;
++	[s_albumKeepAlive play];
++	NSLog(@"Sonde Album: arrière-plan, app maintenue en vie (silence)");
++}
++
++static void albumKeepAliveStop() {
++	if (!s_albumKeepAlive)
++		return;
++	[s_albumKeepAlive stop];
++	[s_albumKeepAlive release];
++	s_albumKeepAlive = nil;
++	if (s_albumPrevCategory)
++		[[AVAudioSession sharedInstance] setCategory:s_albumPrevCategory withOptions:s_albumPrevOptions error:nil];
++	NSLog(@"Sonde Album: premier plan, silence arrêté");
++}
++
+ API_AVAILABLE(ios(13.0))
+ @implementation iOS7SceneDelegate
+ 
+@@ -54,9 +102,11 @@ - (void)sceneDidEnterBackground:(UIScene *)scene {
+ 	[[iOS7AppDelegate iPhoneView] beginBackgroundSaveStateTask];
+ 
+ 	[[iOS7AppDelegate iPhoneView] saveApplicationState];
++	albumKeepAliveStart();	// Sonde Album
+ }
+ 
+ - (void)sceneWillEnterForeground:(UIScene *)scene {
++	albumKeepAliveStop();	// Sonde Album
+ }
+ 
+ @end
 diff --git a/backends/platform/ios7/ios7_touch_controller.mm b/backends/platform/ios7/ios7_touch_controller.mm
 index 5d6bd2bdc7..12135921b3 100644
 --- a/backends/platform/ios7/ios7_touch_controller.mm
@@ -2102,7 +2232,7 @@ index 265a6930cd..4e7145745c 100644
  	WINDEMO1("barbpauper", "Demo", "PPDemo.exe", "dde8ac96c47b16cb802a38feb1f1df19", 2519617, 900),
  
 diff --git a/engines/director/director.cpp b/engines/director/director.cpp
-index 7857289f15..0f7b7219a9 100644
+index 7857289f15..72d4852ba3 100644
 --- a/engines/director/director.cpp
 +++ b/engines/director/director.cpp
 @@ -19,15 +19,22 @@
@@ -2141,7 +2271,19 @@ index 7857289f15..0f7b7219a9 100644
  #include "director/sound.h"
  #include "director/window.h"
  #include "director/lingo/lingo-profiler.h"
-@@ -263,7 +276,706 @@ void renderPendingWindow() { }
+@@ -162,6 +175,11 @@ DirectorEngine::DirectorEngine(OSystem *syst, const DirectorGameDescription *gam
+ }
+ 
+ DirectorEngine::~DirectorEngine() {
++	// Sonde Album : sortie normale (menu du jeu) : pas de reprise automatique au prochain lancement
++	if (ConfMan.hasKey("album_resume", Common::ConfigManager::kApplicationDomain)) {
++		ConfMan.removeKey("album_resume", Common::ConfigManager::kApplicationDomain);
++		ConfMan.flushToDisk();
++	}
+ 	delete _lingo;
+ 	delete _lingoProfiler;
+ 
+@@ -263,7 +281,756 @@ void renderPendingWindow() { }
  }
  #endif
  
@@ -2467,7 +2609,7 @@ index 7857289f15..0f7b7219a9 100644
 +		sondeKeyboardTick();
 +	}
 +	// Sonde Ernest 4 : sauvegarde automatique (le jeu ne sauvegarde qu'en quittant par son menu ; sur iPhone, iOS peut
-+	// fermer l'app à tout moment) : 6 s après l'arrivée sur une page, puis toutes les 3 minutes, jeu au repos
++	// fermer l'app à tout moment) : 6 s après l'arrivée sur une page, puis toutes les minutes, jeu au repos
 +	{
 +		static Common::String autoMovie;
 +		static uint32 autoNext = 0;
@@ -2477,6 +2619,12 @@ index 7857289f15..0f7b7219a9 100644
 +			autoMovie = mname;
 +			autoNext = now + 6000;
 +		}
++		// app quittée (iPhone) : sauvegarde tout de suite, le moteur est gelé juste après
++		const bool forced = _sondeSaveNow;
++		bool forcedOk = false;
++		if (forced)
++			autoNext = now;
++		ConfMan.setBool("album_save_on_suspend", gameIsAlbert4() || gameIsAlbert5(), Common::ConfigManager::kTransientDomain);
 +		bool page = gameIsAlbert4() && mname.size() > 3 && mname[0] == 's' && !mname.hasPrefix("s00") && !mname.hasPrefix("s20") && !mname.hasPrefix("s21");
 +		bool page5 = gameIsAlbert5() && mname.size() > 3 && mname[0] == 's' && Common::isDigit(mname[1]) && !mname.hasPrefix("s00");
 +		if (page5 && autoNext && now >= autoNext) {
@@ -2492,7 +2640,8 @@ index 7857289f15..0f7b7219a9 100644
 +				" end if\n"
 +				"end if");
 +			bool ok = g_lingo->_globalvars.getValOrDefault("gSondeAutoOK").asInt() == 1;
-+			autoNext = now + (ok ? 180000 : 5000);
++			autoNext = now + (ok ? 60000 : 5000);
++			forcedOk = forcedOk || ok;
 +			if (ok)
 +				debug("sonde : sauvegarde automatique (%s)", mname.c_str());
 +		}
@@ -2530,9 +2679,28 @@ index 7857289f15..0f7b7219a9 100644
 +				" end if\n"
 +				"end if");
 +			bool ok = g_lingo->_globalvars.getValOrDefault("gSondeAutoOK").asInt() == 1;
-+			autoNext = now + (ok ? 180000 : 5000);
++			autoNext = now + (ok ? 60000 : 5000);
++			forcedOk = forcedOk || ok;
 +			if (ok)
 +				debug("sonde : sauvegarde automatique (%s)", mname.c_str());
++		}
++		if (forced) {
++			// joueur en cours retenu pour la reprise automatique au prochain lancement (si iOS ferme l'app) : même si
++			// le jeu était occupé, la dernière sauvegarde automatique (3 min au plus) sera reprise
++			_sondeSaveNow = false;
++			if (page || page5) {
++				g_lingo->_globalvars["gSondeName"] = Datum("");
++				g_debugger->lingoEval(gameIsAlbert5() ?
++					"global gL, gSondeName\nif listP(gL) then\n if listP(getaProp(gL, #PLAYER)) then set gSondeName to getaProp(getaProp(gL, #PLAYER), #name)\nend if" :
++					"global gL, gSondeName\nif listP(gL) then\n if stringP(getaProp(gL, #PLAYER)) then set gSondeName to getaProp(gL, #PLAYER)\nend if");
++				Common::String who = g_lingo->_globalvars.getValOrDefault("gSondeName").asString();
++				if (!who.empty() && who != "0") {
++					ConfMan.set("album_resume", who, Common::ConfigManager::kApplicationDomain);
++					ConfMan.flushToDisk();
++				}
++				debug("sonde : app quittée, sauvegarde %s, reprise de « %s »", forcedOk ? "faite" : "non faite (jeu occupé)", who.c_str());
++			}
++			ConfMan.setBool("album_suspend_saved", true, Common::ConfigManager::kTransientDomain);
 +		}
 +	}
 +	// Ernest 4, tutoriel de la carte (bug d'origine) : toucher la flûte pendant que Chipikan finit de parler lance sa
@@ -2608,6 +2776,30 @@ index 7857289f15..0f7b7219a9 100644
 +	// one key per tick so that "the key" is right for each keyDown
 +	static Common::Array<Common::KeyState> pendingKeys;
 +	static uint32 lastKey = 0;
++	// iPhone : l'app avait été quittée en pleine partie (et iOS l'a fermée) : à l'écran du prénom, on retape celui du
++	// joueur et on valide, comme lui ; une seule fois
++	{
++		static uint32 nameScreenSince = 0;
++		static bool resumeDone = false;
++		if (!resumeDone && sondeScreenName().equalsIgnoreCase("s00_save")) {
++			if (!nameScreenSince)
++				nameScreenSince = now;
++			if (now - nameScreenSince >= 2000) {
++				resumeDone = true;
++				const Common::String who = ConfMan.hasKey("album_resume", Common::ConfigManager::kApplicationDomain) ? ConfMan.get("album_resume", Common::ConfigManager::kApplicationDomain) : Common::String();
++				if (!who.empty()) {
++					for (uint k = 0; k < who.size(); k++)
++						pendingKeys.push_back(Common::KeyState((Common::KeyCode)(byte)tolower(who[k]), (byte)who[k]));
++					pendingKeys.push_back(Common::KeyState(Common::KEYCODE_RETURN, 13));
++					ConfMan.removeKey("album_resume", Common::ConfigManager::kApplicationDomain);
++					ConfMan.flushToDisk();
++					debug("sonde : reprise automatique de « %s »", who.c_str());
++				}
++			}
++		} else if (!resumeDone) {
++			nameScreenSince = 0;
++		}
++	}
 +	if (!pendingKeys.empty() && now - lastKey >= 120) {
 +		lastKey = now;
 +		Common::Event e;
@@ -2848,7 +3040,7 @@ index 7857289f15..0f7b7219a9 100644
  	debug("Starting v%d Director game", getVersion());
  
  	// We want to avoid GUI errors for buildbot, because they hang it
-@@ -391,6 +1103,7 @@ Common::Error DirectorEngine::run() {
+@@ -391,6 +1158,7 @@ Common::Error DirectorEngine::run() {
  		DT::renderPendingWindow();
  
  		draw();
@@ -2856,7 +3048,7 @@ index 7857289f15..0f7b7219a9 100644
  		while (!_windowsToForget.empty()) {
  			Window *window = _windowsToForget.back();
  			_windowsToForget.pop_back();
-@@ -451,8 +1164,15 @@ Common::String DirectorEngine::getEXEName() const {
+@@ -451,8 +1219,15 @@ Common::String DirectorEngine::getEXEName() const {
  void DirectorEngine::parseOptions() {
  	_options.startMovie.startFrame = -1;
  
@@ -2874,7 +3066,7 @@ index 7857289f15..0f7b7219a9 100644
  	Common::StringTokenizer tok(ConfMan.get("start_movie"), ",");
  
 diff --git a/engines/director/director.h b/engines/director/director.h
-index 82b393d4d0..64f2efd572 100644
+index 82b393d4d0..6d4c013dbe 100644
 --- a/engines/director/director.h
 +++ b/engines/director/director.h
 @@ -157,6 +157,10 @@ const int SCALE_THRESHOLD = 0x100;
@@ -2888,7 +3080,7 @@ index 82b393d4d0..64f2efd572 100644
  	DirectorEngine(OSystem *syst, const DirectorGameDescription *gameDesc);
  	~DirectorEngine() override;
  
-@@ -291,6 +295,37 @@ public:
+@@ -291,6 +295,38 @@ public:
  
  protected:
  	Common::Error run() override;
@@ -2908,6 +3100,7 @@ index 82b393d4d0..64f2efd572 100644
 +	Common::Array<int> _sondeTabChannels;	// rang dans album_tabs -> piste de l'onglet
 +	uint32 _sondeSwallowUntil = 0;
 +	bool _sondeTouchHeld = false;
++	bool _sondeSaveNow = false;	// iPhone : app quittée, sauvegarder tout de suite (avant le gel)
 +	Common::Array<Common::Rect> _sondeBoxes;	// mise en page iPhone : dernière place de chaque piste
 +	Common::Array<uint32> _sondeBoxSince;	// et depuis quand elle n'a pas bougé
 +	Common::Array<int> _sondeBoxMember;	// image affichée (une animation compte comme un mouvement)
@@ -2926,7 +3119,7 @@ index 82b393d4d0..64f2efd572 100644
  
  public:
  	const DirectorGameDescription *_gameDescription;
-@@ -378,6 +413,7 @@ struct DirectorPlotData {
+@@ -378,6 +414,7 @@ struct DirectorPlotData {
  	uint32 backColor;
  	uint32 foreColor;
  	bool applyColor = false;
@@ -2934,7 +3127,7 @@ index 82b393d4d0..64f2efd572 100644
  
  	// graphics.cpp
  	void setApplyColor();
-@@ -396,7 +432,7 @@ struct DirectorPlotData {
+@@ -396,7 +433,7 @@ struct DirectorPlotData {
  	                                                srf(old.srf), dst(old.dst),
  	                                                destRect(old.destRect), srcPoint(old.srcPoint),
  	                                                colorWhite(old.colorWhite), colorBlack(old.colorBlack),
@@ -2944,7 +3137,7 @@ index 82b393d4d0..64f2efd572 100644
  			ms = new MacShape(*old.ms);
  		} else {
 diff --git a/engines/director/events.cpp b/engines/director/events.cpp
-index f843756913..3c67c97894 100644
+index f843756913..0adb79546b 100644
 --- a/engines/director/events.cpp
 +++ b/engines/director/events.cpp
 @@ -22,6 +22,7 @@
@@ -2955,7 +3148,7 @@ index f843756913..3c67c97894 100644
  #include "common/translation.h"
  
  #include "audio/mixer.h"
-@@ -49,7 +50,136 @@ bool DirectorEngine::pollEvent(Common::Event &event) {
+@@ -49,7 +50,140 @@ bool DirectorEngine::pollEvent(Common::Event &event) {
  		event = _injectedEvents.remove_at(0);
  		return true;
  	}
@@ -3056,6 +3249,10 @@ index f843756913..3c67c97894 100644
 +		_sondeHasDeferredMove = true;
 +		return true;
 +	}
++	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == 0x414C5356) {	// 'ALSV' : app quittée, sauvegarder
++		_sondeSaveNow = true;
++		return true;
++	}
 +	if (event.type == Common::EVENT_MOUSEMOVE && event.customType == 0x414C4B42) {	// 'ALKB' : bouton d'outil iOS
 +		sondeToolCommand(event.relMouse.x);
 +		return true;
@@ -3093,7 +3290,7 @@ index f843756913..3c67c97894 100644
  }
  
  bool DirectorEngine::processSysEvents(bool captureClick, bool skipWindowManager) {
-@@ -231,14 +361,16 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -231,14 +365,16 @@ bool Movie::processSysEvent(Common::Event &event) {
  				if (g_system->getEventManager()->getButtonState() == 0)
  					return true;
  
@@ -3114,7 +3311,7 @@ index f843756913..3c67c97894 100644
  				}
  			} else {
  				if (_lastEnteredChannelId) {
-@@ -258,11 +390,12 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -258,11 +394,12 @@ bool Movie::processSysEvent(Common::Event &event) {
  		} else {
  			pos = event.mouse;
  
@@ -3128,7 +3325,7 @@ index f843756913..3c67c97894 100644
  
  			// FIXME: Check if these are tracked with the right mouse button
  			_lastEventTime = g_director->getMacTicks();
-@@ -307,6 +440,13 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -307,6 +444,13 @@ bool Movie::processSysEvent(Common::Event &event) {
  
  			debugC(3, kDebugEvents, "Movie::processSysEvent(): Button Up @(%d, %d), movie '%s'", pos.x, pos.y, _macName.c_str());
  
@@ -3142,7 +3339,7 @@ index f843756913..3c67c97894 100644
  			LEvent ev = kEventMouseUp;
  			// In D5 and up, right mouse clicks don't trigger the mouseUp handler.
  			// They are caught by the rightMouseUp handler only.
-@@ -323,6 +463,12 @@ bool Movie::processSysEvent(Common::Event &event) {
+@@ -323,6 +467,12 @@ bool Movie::processSysEvent(Common::Event &event) {
  				}
  			}
  
@@ -9144,3 +9341,16 @@ index d53c081e90..41bfbc3cb4 100644
  
  	// events.cpp
  	bool processSysEvent(Common::Event &event);
+diff --git a/ports.mk b/ports.mk
+index 261b52002a..d140d9084d 100644
+--- a/ports.mk
++++ b/ports.mk
+@@ -621,7 +621,7 @@ scummvm-static-ios: $(DETECT_OBJS) $(OBJS)
+ 		$(OSX_STATIC_LIBS) \
+ 		-framework UIKit -framework CoreGraphics -framework OpenGLES -framework GameController \
+ 		-framework CoreFoundation -framework QuartzCore -framework Foundation \
+-		-framework AudioToolbox -framework CoreAudio -framework CoreMIDI \
++		-framework AudioToolbox -framework CoreAudio -framework CoreMIDI -framework AVFoundation \
+ 		-framework SystemConfiguration -lobjc -lz
+ 
+ # Special target to create a snapshot disk image for macOS

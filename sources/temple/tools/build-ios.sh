@@ -37,6 +37,8 @@ if [ ! -f config.mk ]; then
 fi
 
 echo "== Compilation"
+# iPhone : maintien en vie en arrière-plan (silence joué, AVAudioSession) → AVFoundation
+grep -q 'framework AVFoundation' config.mk || sed -i '' 's/-framework AudioToolbox/-framework AVFoundation -framework AudioToolbox/' config.mk
 make -j$(sysctl -n hw.ncpu) > /tmp/ios_build.log 2>&1 || { grep -E " error" /tmp/ios_build.log | head; exit 1; }
 # OSX_STATIC_LIBS vidé : la règle reprend sinon SDL/OpenGL du Mac
 make ios7bundle OSX_STATIC_LIBS="" > /tmp/ios_bundle.log 2>&1 || { tail -20 /tmp/ios_bundle.log; exit 1; }
@@ -61,6 +63,10 @@ plutil -replace CFBundleDisplayName -string "$DISPLAY" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:0 string UIInterfaceOrientationLandscapeLeft" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~ipad:1 string UIInterfaceOrientationLandscapeRight" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Set :UIRequiresFullScreen true" $APP/Info.plist 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool true" $APP/Info.plist
+# lecteur audio d'arrière-plan : iOS ne ferme plus l'app quand on en sort (reprise instantanée)
+/usr/libexec/PlistBuddy -c "Delete :UIBackgroundModes" $APP/Info.plist 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" $APP/Info.plist
+/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string audio" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Delete :UIStatusBarHidden" $APP/Info.plist 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :UIStatusBarHidden bool true" $APP/Info.plist
 /usr/libexec/PlistBuddy -c "Delete :UIViewControllerBasedStatusBarAppearance" $APP/Info.plist 2>/dev/null || true

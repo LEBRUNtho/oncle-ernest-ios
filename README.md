@@ -18,6 +18,9 @@ iPhone et iPad, en plein écran et au doigt.** Version bêta.
 - Sur iPhone, le livre agrandi au maximum, les outils en gros boutons sur le côté gauche et les pages à droite.
 - Un menu des marque-pages pour voyager d'une page à l'autre comme dans l'album.
 - Des icônes redessinées en haute définition.
+- Une reprise instantanée : en quittant l'app, le jeu reste en pause en arrière-plan (comme un lecteur de musique,
+  sans couper la vôtre) au lieu d'être fermé par iOS. Et si iOS la ferme quand même, la partie est sauvegardée
+  automatiquement.
 - Des sauvegardes visibles dans l'app Fichiers, à copier d'un appareil à l'autre.
 - Chaque jeu a été joué de bout en bout pendant le portage.
 
